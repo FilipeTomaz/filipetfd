@@ -32,3 +32,18 @@ stopifnot(all(is.na(e$dados$concessoes_h[e$dados$ano>=2025])),
 invalido <- try(projetar(e,list(duracao_uniforme=0)),silent=TRUE)
 stopifnot(inherits(invalido,'try-error'))
 cat('Cenários alternativos, idades médias, referência mínima, horizonte e parâmetros inválidos: OK\n')
+# Elegibilidade: escala o fluxo, sem alterar histórico ou a incidência estimada.
+completo <- projetar(e,list(idade_proposta_m=65))
+restrito <- projetar(e,list(idade_proposta_m=65,proporcao_elegivel=0.6))
+stopifnot(isTRUE(all.equal(restrito$anual$economia_real,0.6*completo$anual$economia_real)),
+  isTRUE(all.equal(restrito$dados,completo$dados)),
+  all(abs(restrito$anual$pagamentos_referencia-restrito$anual$pagamentos_proposta-
+    restrito$anual$pagamentos_excluidos-restrito$anual$emissoes_adiadas)<1e-5),
+  all(restrito$anual$pagamentos_proposta >= -1e-5))
+# Exclusão completa elimina pagamentos das novas coortes; 100% mantém a economia original.
+ninguem <- projetar(e,list(proporcao_elegivel=0))
+stopifnot(all(ninguem$anual$pagamentos_proposta==0),
+  all(ninguem$anual$economia_real==0),
+  all(r$anual$economia_total_real==r$anual$economia_real),
+  inherits(try(projetar(e,list(proporcao_elegivel=1.1)),silent=TRUE),'try-error'))
+cat('Elegibilidade de 60%, 0% e 100%, decomposição e conservação dos pagamentos: OK\n')

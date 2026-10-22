@@ -37,3 +37,21 @@ Rscript tests/test_projecoes.R
 Os valores de referência dos testes são resultados salvos no Excel original;
 não entram no cálculo de produção. Os testes comparam os cenários originais,
 verificam mudanças de idade e transição e a economia nula quando não há aumento.
+
+## Cenário de 60% elegíveis, ambos os sexos aos 65 anos
+
+```r
+rmarkdown::render("cenario_60_porcento.Rmd")
+```
+
+A referência mantém as regras atuais, sem reduzir o fluxo de elegíveis. A proposta
+aplica `proporcao_elegivel = 0.6` às novas coortes desde 2027 e transição uniforme
+de 10 anos, até 2036. O relatório separa economia por adiamento de idade entre os
+60% e por exclusão dos outros 40%. O fator incide sobre o fluxo projetado pela
+incidência histórica, não diretamente sobre toda a população. Os excluídos não
+recebem este benefício em nenhum ano do exercício; o estoque anterior é preservado.
+`economia_total_*` inclui os dois efeitos. As antigas colunas `economia_real` e
+`economia_nominal` continuam medindo apenas o adiamento entre os elegíveis.
+
+A projeção anual executada com os parâmetros padrão deste cenário está em
+`resultados/cenario_60_porcento.csv`, com valores monetários em reais.

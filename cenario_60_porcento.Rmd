@@ -1,0 +1,124 @@
+---
+title: "Cenário: 60% elegíveis e aposentadoria aos 65 anos"
+output:
+  html_document:
+    toc: true
+params:
+  arquivo: "Proposta de Equiparação da Idade pela DIB.xlsx"
+  idade_vigente_h: 60
+  idade_vigente_m: 55
+  idade_proposta_h: 65
+  idade_proposta_m: 65
+  idades_medias_h: [60.56, 60.74, 60.78, 60.82, 60.79, 60.72]
+  idades_medias_m: [56.08, 56.24, 56.31, 56.48, 56.58, 56.29]
+  referencia: "media"
+  inicio: 2027
+  fim: 2060
+  ano_base: 2026
+  intervalo_degraus: 2
+  duracao_uniforme: 10
+  pagamentos_ano: 13
+  proporcao_elegivel: 0.6
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, message=FALSE)
+source('R/projecoes.R')
+e <- ler_entradas(params$arquivo)
+p <- params[setdiff(names(params),'arquivo')]
+r <- projetar(e,p)
+a <- subset(r$anual,cenario=='uniforme')
+regras <- subset(r$regras,cenario=='uniforme' & ano < p$inicio+p$duracao_uniforme)
+```
+
+## Referência e proposta
+
+**Referência:** regras atuais, sem restrição adicional de elegibilidade; idades
+mínimas de `r p$idade_vigente_h` anos para homens e `r p$idade_vigente_m` para
+mulheres, com a defasagem de concessão pela idade média efetiva de 2020–2025.
+O fluxo de concessões continua sendo população multiplicada pela incidência
+histórica de 2020–2024, sem aplicar o fator de 60% à referência.
+
+**Proposta:** apenas `r 100*p$proporcao_elegivel`% desse fluxo permanece elegível,
+com idade final de `r p$idade_proposta_h` anos para homens e
+`r p$idade_proposta_m` para mulheres. A transição uniforme começa em
+`r p$inicio` e dura `r p$duracao_uniforme` anos, terminando em
+`r p$inicio+p$duracao_uniforme-1`. As coortes anteriores ao início são preservadas.
+
+Os 60% são uma fração do fluxo que seria elegível nas regras atuais, aplicada
+igualmente por sexo, ano e mês de entrada. Não se supõe que 60% de toda a população
+se aposente: a incidência histórica continua sendo usada. Os demais 40% ficam
+permanentemente sem este benefício neste exercício, sem migração para outro.
+
+## Regras de transição
+
+O acréscimo em meses é a diferença entre idades proposta e vigente, multiplicada
+pela fração da transição já cumprida e arredondada para meses inteiros. A exigência
+é atualizada a cada janeiro. A concessão ocorre no primeiro mês que satisfaz a
+idade do ano, respeitando a defasagem da referência.
+
+```{r regras}
+knitr::kable(regras[c('ano','sexo','idade_exigida','defasagem_meses')],digits=3,row.names=FALSE)
+```
+
+## Economia frente às regras atuais
+
+A economia total é decomposta, sem dupla contagem, em:
+
+- **Idade:** pagamentos adiados entre os que continuam elegíveis (60%).
+- **Restrição:** pagamentos que seriam feitos aos demais 40% na regra atual.
+
+A soma é a diferença entre a despesa de referência, sem restrição, e a despesa
+proposta, com os 60% elegíveis sujeitos à nova idade. Consideram-se apenas os
+pagamentos das novas coortes alcançadas pela regra; não é uma estimativa da
+despesa total do estoque de aposentadorias.
+
+```{r resumo}
+marcos <- intersect(c(2030,2040,2050,p$fim),a$ano)
+resumo <- a[a$ano %in% marcos,c('ano','economia_real_acumulada',
+ 'economia_exclusao_real_acumulada','economia_total_real_acumulada',
+ 'economia_total_nominal_acumulada')]
+resumo[-1] <- resumo[-1]/1e9
+knitr::kable(resumo,digits=3,row.names=FALSE,col.names=c('Até o ano',
+ 'Idade: R$ bi reais','Restrição: R$ bi reais','Total: R$ bi reais','Total: R$ bi nominais'))
+```
+
+Valores reais expressos em reais de `r p$ano_base`, deflacionados pelo INPC da
+planilha. O total é acumulado desde `r p$inicio`.
+
+```{r grafico, fig.width=9, fig.height=5}
+matplot(a$ano,cbind(a$economia_real_acumulada,a$economia_exclusao_real_acumulada,
+ a$economia_total_real_acumulada)/1e9,type='l',lty=1,lwd=2,
+ col=c('#0072B2','#D55E00','#009E73'),xlab='Ano',
+ ylab=paste('Economia acumulada — R$ bi de',p$ano_base))
+legend('topleft',legend=c('Idade entre os elegíveis','Restrição de elegibilidade','Total'),
+ col=c('#0072B2','#D55E00','#009E73'),lty=1,bty='n')
+```
+
+## Projeção anual
+
+```{r anual}
+tabela <- a[c('ano','economia_real','economia_exclusao_real','economia_total_real',
+ 'economia_total_real_acumulada')]
+tabela[-1] <- tabela[-1]/1e9
+knitr::kable(tabela,digits=3,row.names=FALSE,col.names=c('Ano','Idade: R$ bi',
+ 'Restrição: R$ bi','Total anual: R$ bi','Total acumulado: R$ bi'))
+```
+
+## Premissas e execução
+
+A planilha é usada somente para entradas literais. Todas as fórmulas são calculadas
+em R. Mantêm-se salário mínimo, população e INPC da planilha; fluxo mensal uniforme;
+13 pagamentos por ano; ausência de mortalidade, respostas comportamentais e outros
+benefícios. A exclusão permanente de 40% é uma hipótese de simulação.
+
+Edite `proporcao_elegivel`, idades e duração no YAML para outros exercícios.
+Execute na raiz do repositório:
+
+```r
+rmarkdown::render('cenario_60_porcento.Rmd')
+```
+
+```{r sessao}
+sessionInfo()
+```

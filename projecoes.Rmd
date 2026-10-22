@@ -19,6 +19,7 @@ params:
   intervalo_degraus: 2
   duracao_uniforme: 10
   pagamentos_ano: 13
+  proporcao_elegivel: 1
 ---
 
 ```{r setup, include=FALSE}
@@ -63,6 +64,12 @@ knitr::kable(resultado$dados, digits=4, row.names=FALSE)
 ```
 
 # Método
+
+`proporcao_elegivel` multiplica o fluxo de concessões das coortes desde a vigência.
+O valor 1 preserva o cenário original; 0.6 restringe o fluxo a 60%. As colunas
+`economia_real` e `economia_nominal` medem o efeito da idade entre os elegíveis;
+as colunas `economia_total_*` incluem também a exclusão dos demais frente a
+uma referência sem restrição. Veja `cenario_60_porcento.Rmd` para essa decomposição.
 
 1. Calcula-se a incidência por sexo como concessões/população. A partir de 2025,
    usa-se a média das incidências anuais de 2020–2024 multiplicada pela população.

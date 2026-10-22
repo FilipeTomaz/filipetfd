@@ -43,12 +43,12 @@ parametros_padrao <- function() list(
   idade_proposta_h = 65, idade_proposta_m = 62,
   idades_medias_h = NULL, idades_medias_m = NULL,
   referencia = 'media', inicio = 2027, fim = 2060, ano_base = 2026,
-  intervalo_degraus = 2, duracao_uniforme = 10, pagamentos_ano = 13)
+  intervalo_degraus = 2, duracao_uniforme = 10, pagamentos_ano = 13, proporcao_elegivel = 1)
 
 validar_parametros <- function(p, e) {
   escalares <- c('idade_vigente_h', 'idade_vigente_m', 'idade_proposta_h',
     'idade_proposta_m', 'inicio', 'fim', 'ano_base', 'intervalo_degraus',
-    'duracao_uniforme', 'pagamentos_ano')
+    'duracao_uniforme', 'pagamentos_ano', 'proporcao_elegivel')
   for (n in escalares) if (length(p[[n]]) != 1 || !is.numeric(p[[n]]) ||
       !is.finite(p[[n]])) stop('Parâmetro inválido: ', n)
   for (n in c('inicio','fim','ano_base','intervalo_degraus','duracao_uniforme'))
@@ -59,6 +59,8 @@ validar_parametros <- function(p, e) {
   if (p$inicio <= p$ano_base || p$fim < p$inicio ||
       !all(c(p$inicio, p$fim, p$ano_base) %in% e$dados$ano))
     stop('Use início posterior à base, e horizonte dentro dos dados da planilha.')
+  if (p$proporcao_elegivel < 0 || p$proporcao_elegivel > 1)
+    stop('proporcao_elegivel deve estar entre 0 e 1.')
   for (s in c('h','m')) {
     v <- p[[paste0('idade_vigente_', s)]]; a <- p[[paste0('idade_proposta_', s)]]
     if (v <= 0 || a < v || v != floor(v) || a != floor(a))
@@ -92,6 +94,7 @@ projetar <- function(entradas, parametros = list()) {
   H <- function(x,n) C(x)-C(x-n)
   for (cenario in c('sem_transicao','degraus','uniforme')) {
     emissoes <- numeric(length(anos))
+    pagamentos_referencia <- numeric(length(anos))
     for (sexo in c('h','m')) {
       vigente <- p[[paste0('idade_vigente_',sexo)]]
       proposta <- p[[paste0('idade_proposta_',sexo)]]
@@ -107,7 +110,14 @@ projetar <- function(entradas, parametros = list()) {
       regras[[length(regras)+1]] <- data.frame(cenario, sexo, ano=anos,
         idade_exigida=vigente+acrescimo(anos)/12, defasagem_meses=delta)
       for (coorte in anos) {
-        tamanho <- d[[paste0('concessoes_',sexo)]][match(coorte,d$ano)]
+        tamanho_original <- d[[paste0('concessoes_',sexo)]][match(coorte,d$ano)]
+        tamanho <- tamanho_original*p$proporcao_elegivel
+        # Referência sem restrição, somente coortes alcançadas pela nova regra.
+        for (mes_ref in 1:12) {
+          meses <- pmin(pmax(12*(anos-coorte+1)-mes_ref+1-delta,0),12)
+          pagamentos_referencia <- pagamentos_referencia +
+            tamanho_original/12 * meses*p$pagamentos_ano/12
+        }
         if (cenario == 'uniforme') {
           # Primeiro mês elegível: a exigência é atualizada em janeiro de cada ano.
           for (mes in 1:12) {
@@ -144,6 +154,16 @@ projetar <- function(entradas, parametros = list()) {
     econ$economia_nominal_acumulada <- cumsum(econ$economia_nominal)
     econ$economia_real <- econ$economia_nominal/econ$deflator
     econ$economia_real_acumulada <- cumsum(econ$economia_real)
+    econ$pagamentos_referencia <- pagamentos_referencia
+    econ$pagamentos_excluidos <- (1-p$proporcao_elegivel)*pagamentos_referencia
+    econ$pagamentos_proposta <- p$proporcao_elegivel*pagamentos_referencia-emissoes
+    econ$economia_exclusao_nominal <- econ$pagamentos_excluidos*econ$salario
+    econ$economia_exclusao_real <- econ$economia_exclusao_nominal/econ$deflator
+    econ$economia_exclusao_real_acumulada <- cumsum(econ$economia_exclusao_real)
+    econ$economia_total_nominal <- econ$economia_nominal+econ$economia_exclusao_nominal
+    econ$economia_total_real <- econ$economia_real+econ$economia_exclusao_real
+    econ$economia_total_nominal_acumulada <- cumsum(econ$economia_total_nominal)
+    econ$economia_total_real_acumulada <- cumsum(econ$economia_total_real)
     resultados[[cenario]] <- econ
   }
   # Memórias têm colunas distintas conforme o método.
