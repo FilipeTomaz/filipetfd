@@ -1,0 +1,135 @@
+---
+title: "Equiparação da idade da aposentadoria rural"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+params:
+  arquivo: "Proposta de Equiparação da Idade pela DIB.xlsx"
+  idade_vigente_h: 60
+  idade_vigente_m: 55
+  idade_proposta_h: 65
+  idade_proposta_m: 62
+  idades_medias_h: [60.56, 60.74, 60.78, 60.82, 60.79, 60.72]
+  idades_medias_m: [56.08, 56.24, 56.31, 56.48, 56.58, 56.29]
+  referencia: "media"
+  inicio: 2027
+  fim: 2060
+  ano_base: 2026
+  intervalo_degraus: 2
+  duracao_uniforme: 10
+  pagamentos_ano: 13
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = TRUE, message = FALSE)
+source('R/projecoes.R')
+entradas <- ler_entradas(params$arquivo)
+p <- params[setdiff(names(params), 'arquivo')]
+resultado <- projetar(entradas, p)
+```
+
+# Parâmetros e dados de entrada
+
+Edite os parâmetros no cabeçalho YAML ou use **Knit with Parameters** no RStudio.
+As idades médias correspondem, em ordem, aos anos de 2020 a 2025.
+`referencia: media` usa a média desses seis valores e arredonda o atraso para meses
+inteiros; `minima` usa atraso zero. As idades vigentes e propostas são editáveis
+separadamente por sexo. `intervalo_degraus` é o número de anos entre aumentos de
+um ano de idade; `duracao_uniforme` é a duração total da transição em meses de
+idade distribuídos por anos, com arredondamento igual ao Excel.
+
+```{r parametros}
+knitr::kable(data.frame(parametro=names(p), valor=vapply(p, paste, collapse=', ', FUN.VALUE=character(1))))
+```
+
+O leitor inspeciona o XML do XLSX e rejeita fórmulas nas entradas obrigatórias.
+Nas concessões, células com fórmulas são descartadas e projetadas em R. A segunda
+aba não é usada como fonte: seus vínculos são refeitos pelo modelo. Não se importam
+resultados salvos das fórmulas, tabelas auxiliares ou totais.
+
+Dados importados da primeira aba:
+
+- B5:B55: anos; D5:D55 e G5:G55: população por sexo; I5:I55 e J5:J55: salário e INPC.
+- C5:C19 e F5:F19: concessões históricas até 2024.
+- AH7:AH12 e AI7:AI12: idades médias históricas, disponíveis para uso direto da função R;
+  neste relatório prevalecem os parâmetros editáveis do YAML.
+
+Salário mínimo e INPC projetados são entradas exógenas literais da planilha;
+não há fórmula de projeção salarial no arquivo a ser reproduzida.
+
+```{r entradas}
+knitr::kable(resultado$dados, digits=4, row.names=FALSE)
+```
+
+# Método
+
+1. Calcula-se a incidência por sexo como concessões/população. A partir de 2025,
+   usa-se a média das incidências anuais de 2020–2024 multiplicada pela população.
+2. O atraso de referência é `max(0, ROUND(12 × (idade média − idade vigente)))`,
+   ou zero quando a referência é a idade mínima. O arredondamento reproduz o Excel.
+3. Sem transição, exige-se a idade proposta desde o início da vigência. Nos
+   degraus, exige-se mais um ano a cada intervalo, até a idade proposta. Na
+   transição uniforme, o acréscimo total em meses é distribuído pela duração.
+4. A idade exigida é avaliada no ano da concessão. Reproduz-se o agrupamento A/B
+   da primeira aba nos degraus; na transição uniforme, percorrem-se os 12 meses
+   de entrada com pesos iguais e determina-se o primeiro mês elegível.
+5. A diferença nos meses pagos é convertida em pagamentos anuais, incluindo o
+   13º proporcional. Multiplicada pelo salário mínimo, gera a economia nominal;
+   o deflator acumula o INPC a partir do ano seguinte ao ano-base.
+
+```{r regras}
+knitr::kable(subset(resultado$regras, ano <= min(p$fim,p$inicio+13)), digits=3, row.names=FALSE)
+```
+
+# Resultados
+
+Valores monetários calculados em reais; apenas a apresentação abaixo os divide
+por um bilhão. O horizonte e os nomes dos cenários acompanham os parâmetros.
+
+```{r resumo}
+marcos <- intersect(c(2030,p$fim), unique(resultado$anual$ano))
+resumo <- subset(resultado$anual, ano %in% marcos,
+  select=c(cenario,ano,economia_nominal_acumulada,economia_real_acumulada))
+resumo[3:4] <- resumo[3:4]/1e9
+knitr::kable(resumo, digits=3, row.names=FALSE,
+  col.names=c('Cenário','Até o ano','Nominal acumulada (R$ bi)','Real acumulada (R$ bi)'))
+```
+
+```{r grafico, fig.width=9, fig.height=5}
+series <- split(resultado$anual, resultado$anual$cenario)
+matplot(series[[1]]$ano, sapply(series,function(x) x$economia_real_acumulada/1e9),
+  type='l', lty=1, lwd=2, col=c('#0072B2','#D55E00','#009E73'),
+  xlab='Ano', ylab=paste('Economia acumulada — R$ bi de',p$ano_base))
+legend('topleft',legend=names(series),col=c('#0072B2','#D55E00','#009E73'),lty=1,bty='n')
+```
+
+```{r anual}
+tabela <- resultado$anual[c('cenario','ano','emissoes_adiadas','economia_nominal',
+  'economia_nominal_acumulada','economia_real','economia_real_acumulada')]
+knitr::kable(tabela, digits=2, row.names=FALSE)
+```
+
+# Premissas e limites
+
+Mantêm-se as premissas da planilha: coortes anteriores à vigência preservam o
+direito adquirido; benefício de um salário mínimo; fluxo mensal uniforme;
+sem mortalidade durante a espera, migração para outros benefícios ou respostas
+comportamentais. A aplicação de uma média de idade a toda a coorte não representa
+a distribuição efetiva de idades e não permite afirmar, por si só, a direção do viés.
+
+A população de entrada permanece a de homens de 60 anos e mulheres de 55 anos.
+Alterar as idades vigentes muda as regras de elegibilidade, mas não produz uma
+nova projeção demográfica por idade. Para esse uso, substitua também os dados
+populacionais e reavalie a incidência. A projeção está limitada aos anos com dados
+exógenos disponíveis, até 2060. As idades mínimas são inteiras, conforme o modelo
+de degraus da planilha; as médias admitem frações de ano.
+
+# Reprodutibilidade
+
+O objeto `resultado` contém `anual`, `dados`, `regras`, `memoria` e `parametros`.
+A memória permite inspecionar atrasos por coorte, sexo e mês de entrada.
+
+```{r sessao}
+sessionInfo()
+```
