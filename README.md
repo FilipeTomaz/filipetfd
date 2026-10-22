@@ -55,3 +55,23 @@ recebem este benefício em nenhum ano do exercício; o estoque anterior é prese
 
 A projeção anual executada com os parâmetros padrão deste cenário está em
 `resultados/cenario_60_porcento.csv`, com valores monetários em reais.
+
+## Três cenários em um único relatório
+
+```r
+rmarkdown::render("comparacao_tres_cenarios.Rmd")
+```
+
+Compara, sempre frente às regras atuais sem restrição adicional de elegibilidade:
+
+1. Homens aos 65 e mulheres aos 62 anos, com 100% elegíveis.
+2. Homens e mulheres aos 65 anos, com 100% elegíveis.
+3. Homens e mulheres aos 65 anos, com 60% elegíveis.
+
+Todos usam transição uniforme de 10 anos, de 2027 a 2036. O relatório traz três
+resumos, projeções anuais, comparação gráfica e premissas. As idades finais,
+percentual e parâmetros comuns são editáveis no YAML. Usa o mesmo motor
+`R/projecoes.R`; mantenha essa pasta e a planilha ao baixar o repositório.
+Ao renderizar, salva `resultados/tres_cenarios_anual.csv` (valores monetários em
+reais) e `resultados/tres_cenarios_resumo_bilhoes.csv` (valores em R$ bilhões).
+Use `exportar_csv = FALSE` para não gravar os CSVs.

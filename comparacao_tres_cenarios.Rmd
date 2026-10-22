@@ -1,0 +1,245 @@
+---
+title: "Aposentadoria rural: comparação de três cenários"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+params:
+  arquivo: "Proposta de Equiparação da Idade pela DIB.xlsx"
+  idade_vigente_h: 60
+  idade_vigente_m: 55
+  idades_medias_h: [60.56, 60.74, 60.78, 60.82, 60.79, 60.72]
+  idades_medias_m: [56.08, 56.24, 56.31, 56.48, 56.58, 56.29]
+  referencia: "media"
+  inicio: 2027
+  fim: 2060
+  ano_base: 2026
+  duracao_uniforme: 10
+  pagamentos_ano: 13
+  base_idade_h: 65
+  base_idade_m: 62
+  equiparado_idade_h: 65
+  equiparado_idade_m: 65
+  restrito_idade_h: 65
+  restrito_idade_m: 65
+  proporcao_elegivel_restrito: 0.6
+  exportar_csv: true
+  pasta_saida: "resultados"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, message=FALSE, warning=TRUE)
+source('R/projecoes.R')
+entradas <- ler_entradas(params$arquivo)
+comuns <- params[c('idade_vigente_h','idade_vigente_m','idades_medias_h',
+  'idades_medias_m','referencia','inicio','fim','ano_base','duracao_uniforme',
+  'pagamentos_ano')]
+configuracoes <- data.frame(
+  exercicio=c('base_65_62','equiparado_65_65','restrito_65_65_60'),
+  titulo=c('Cenário 1 — base','Cenário 2 — idades equiparadas',
+    'Cenário 3 — idades equiparadas e elegibilidade restrita'),
+  idade_h=c(params$base_idade_h,params$equiparado_idade_h,params$restrito_idade_h),
+  idade_m=c(params$base_idade_m,params$equiparado_idade_m,params$restrito_idade_m),
+  elegibilidade=c(1,1,params$proporcao_elegivel_restrito),
+  stringsAsFactors=FALSE)
+projecoes <- setNames(lapply(seq_len(nrow(configuracoes)),function(i) {
+  cfg <- configuracoes[i,]
+  p <- utils::modifyList(comuns,list(idade_proposta_h=cfg$idade_h,
+    idade_proposta_m=cfg$idade_m,proporcao_elegivel=cfg$elegibilidade))
+  projetar(entradas,p)
+}),configuracoes$exercicio)
+# Seleciona somente a transição uniforme em cada exercício.
+anuais <- lapply(seq_len(nrow(configuracoes)),function(i) {
+  x <- subset(projecoes[[i]]$anual,cenario=='uniforme')
+  x$exercicio <- configuracoes$exercicio[i]
+  x$idade_final_h <- configuracoes$idade_h[i]
+  x$idade_final_m <- configuracoes$idade_m[i]
+  x$proporcao_elegivel <- configuracoes$elegibilidade[i]
+  x
+})
+anual <- do.call(rbind,anuais)
+row.names(anual) <- NULL
+marcos <- sort(intersect(c(2030,2040,2050,params$fim),unique(anual$ano)))
+resumo <- anual[anual$ano %in% marcos,c('exercicio','ano',
+  'economia_real_acumulada','economia_exclusao_real_acumulada',
+  'economia_total_real_acumulada','economia_total_nominal_acumulada')]
+# O resumo de apresentação usa bilhões; o CSV anual permanece em reais.
+resumo_bi <- resumo
+resumo_bi[3:6] <- resumo_bi[3:6]/1e9
+names(resumo_bi)[3:6] <- c('idade_real_bi','restricao_real_bi','total_real_bi',
+  'total_nominal_bi')
+formatar <- function(x) formatC(x,format='f',digits=3,big.mark='.',decimal.mark=',')
+tabela_resumo <- function(id) {
+  x <- resumo_bi[resumo_bi$exercicio==id,c('ano','idade_real_bi','restricao_real_bi','total_real_bi')]
+  x[-1] <- lapply(x[-1],formatar)
+  knitr::kable(x,row.names=FALSE,align=c('r','r','r','r'),
+    col.names=c('Até o ano','Aumento de idade','Restrição de elegibilidade','Total'))
+}
+tabela_anual <- function(id) {
+  x <- anual[anual$exercicio==id,c('ano','economia_real','economia_exclusao_real',
+    'economia_total_real','economia_total_real_acumulada')]
+  x[-1] <- lapply(x[-1],function(v) formatar(v/1e9))
+  knitr::kable(x,row.names=FALSE,col.names=c('Ano','Idade no ano','Restrição no ano',
+    'Total no ano','Total acumulado'))
+}
+```
+
+# Leitura dos resultados
+
+Este relatório executa os três exercícios a partir das mesmas entradas e compara
+**todos eles com as regras atuais**, sem restrição adicional de elegibilidade:
+idade mínima de `r params$idade_vigente_h` anos para homens e
+`r params$idade_vigente_m` para mulheres. O termo **cenário base** designa a
+primeira proposta (idades finais `r params$base_idade_h`/`r params$base_idade_m`);
+a referência de cálculo continua sendo a regra atual nos três exercícios.
+
+A transição uniforme começa em `r params$inicio` e dura
+`r params$duracao_uniforme` anos, atingindo as idades finais em
+`r params$inicio+params$duracao_uniforme-1`. A projeção vai até `r params$fim`.
+
+As três tabelas de resumo apresentam **economia acumulada em R$ bilhões de
+`r params$ano_base`**, desde `r params$inicio`. O deflator usa o INPC da planilha.
+A economia total é a soma de dois componentes, sem dupla contagem:
+
+- **Aumento de idade:** pagamentos adiados entre os que permanecem elegíveis.
+- **Restrição:** pagamentos que os excluídos receberiam nas regras atuais.
+
+# Cenário 1 — base
+
+**Homens: `r params$base_idade_h` anos; mulheres: `r params$base_idade_m` anos;
+100% do fluxo elegível; transição de `r params$duracao_uniforme` anos.**
+A economia decorre apenas do aumento de idade, pois não há restrição adicional.
+
+```{r resumo-base, results='asis'}
+tabela_resumo('base_65_62')
+```
+
+# Cenário 2 — idades equiparadas
+
+**Homens: `r params$equiparado_idade_h` anos; mulheres:
+`r params$equiparado_idade_m` anos; 100% do fluxo elegível; transição de
+`r params$duracao_uniforme` anos.** A referência permanece a mesma do cenário 1.
+
+```{r resumo-equiparado, results='asis'}
+tabela_resumo('equiparado_65_65')
+```
+
+# Cenário 3 — idades equiparadas e elegibilidade restrita
+
+**Homens: `r params$restrito_idade_h` anos; mulheres: `r params$restrito_idade_m`
+anos; `r 100*params$proporcao_elegivel_restrito`% do fluxo elegível; transição de
+`r params$duracao_uniforme` anos.**
+
+A restrição só se aplica à proposta e às novas coortes desde `r params$inicio`.
+Na referência, o fluxo continua sem a restrição. A parcela excluída
+(`r 100*(1-params$proporcao_elegivel_restrito)`%) não recebe este benefício
+posteriormente, por hipótese do exercício. Os demais ficam sujeitos às novas idades.
+
+```{r resumo-restrito, results='asis'}
+tabela_resumo('restrito_65_65_60')
+```
+
+# Comparação dos resultados
+
+```{r grafico, fig.width=9, fig.height=5}
+y <- sapply(anuais,function(x) x$economia_total_real_acumulada/1e9)
+rotulos <- sprintf('H %s / M %s — %s%% elegíveis',configuracoes$idade_h,
+  configuracoes$idade_m,100*configuracoes$elegibilidade)
+cores <- c('#0072B2','#009E73','#D55E00')
+matplot(anuais[[1]]$ano,y,type='l',lty=1,lwd=2,col=cores,
+  xlab='Ano',ylab=paste('Economia acumulada — R$ bi de',params$ano_base))
+legend('topleft',legend=rotulos,col=cores,lty=1,lwd=2,bty='n',cex=.8)
+```
+
+A diferença entre os totais dos cenários 2 e 1 mede o efeito adicional de elevar
+a idade final feminina, mantendo 100% do fluxo elegível. A diferença entre os
+cenários 3 e 2 mede o efeito adicional de restringir a elegibilidade **após** a
+mudança de idade; ela não é igual ao componente de restrição exibido na terceira
+tabela, que usa como referência os pagamentos sob a regra atual.
+
+```{r diferencas}
+x1 <- subset(resumo_bi,exercicio=='base_65_62')
+x2 <- subset(resumo_bi,exercicio=='equiparado_65_65')
+x3 <- subset(resumo_bi,exercicio=='restrito_65_65_60')
+diferencas <- data.frame(ano=x1$ano,
+  idade_feminina_adicional=x2$total_real_bi-x1$total_real_bi,
+  restricao_adicional=x3$total_real_bi-x2$total_real_bi)
+diferencas[-1] <- lapply(diferencas[-1],formatar)
+knitr::kable(diferencas,row.names=FALSE,col.names=c('Até o ano',
+  'Cenário 2 menos 1 — R$ bi reais','Cenário 3 menos 2 — R$ bi reais'))
+```
+
+# Método e premissas
+
+1. Importam-se apenas as entradas numéricas sem fórmula do XLSX. A incidência
+   histórica é concessões/população; a média das taxas de 2020–2024 projeta os
+   fluxos a partir de 2025. Não se importam os resultados salvos das fórmulas.
+2. A referência `media` usa as médias de idade efetiva de 2020–2025, editáveis no
+   YAML. Com os valores originais, o atraso arredondado é de 9 meses para homens
+   e 16 para mulheres. `minima` usa a idade mínima, sem defasagem.
+3. O acréscimo exigido cresce a cada janeiro, em meses inteiros, com arredondamento
+   igual ao Excel. Para cada coorte, sexo e mês de entrada, calcula-se o primeiro
+   mês elegível segundo a idade exigida no ano da concessão.
+4. O fator de elegibilidade multiplica o fluxo que seria elegível segundo a
+   incidência histórica, igualmente por sexo, ano e mês. Não é uma hipótese de
+   que 60% de toda a população se aposenta.
+5. Mantêm-se o benefício de um salário mínimo, `r params$pagamentos_ano`
+   pagamentos anuais, fluxo mensal uniforme e salário/INPC da planilha.
+   Preservam-se as coortes anteriores à vigência. Não se incluem mortalidade,
+   respostas comportamentais, migração para outros benefícios ou a despesa do
+   estoque anterior de aposentadorias.
+
+As idades e os percentuais são editáveis no cabeçalho. A população de entrada
+permanece a de homens de 60 anos e mulheres de 55 anos; mudar as idades vigentes
+exige também reavaliar os dados demográficos e a incidência. A projeção está
+limitada aos anos com entradas exógenas disponíveis, até 2060.
+
+# Projeções anuais
+
+Todas as tabelas abaixo estão em **R$ bilhões de `r params$ano_base`**.
+
+## Cenário 1
+
+```{r anual-base}
+tabela_anual('base_65_62')
+```
+
+## Cenário 2
+
+```{r anual-equiparado}
+tabela_anual('equiparado_65_65')
+```
+
+## Cenário 3
+
+```{r anual-restrito}
+tabela_anual('restrito_65_65_60')
+```
+
+# Arquivos e reprodução
+
+Este único relatório executa os três cenários usando o motor compartilhado
+`R/projecoes.R` e a planilha original. No RStudio, abra este Rmd na pasta do
+repositório e use **Knit**, ou execute:
+
+```r
+rmarkdown::render('comparacao_tres_cenarios.Rmd')
+```
+
+```{r exportar}
+if (isTRUE(params$exportar_csv)) {
+  dir.create(params$pasta_saida,recursive=TRUE,showWarnings=FALSE)
+  write.csv(anual,file.path(params$pasta_saida,'tres_cenarios_anual.csv'),row.names=FALSE)
+  write.csv(resumo_bi,file.path(params$pasta_saida,'tres_cenarios_resumo_bilhoes.csv'),row.names=FALSE)
+  cat('CSV anual: valores monetários em reais. CSV de resumo: valores monetários em bilhões.\n')
+}
+```
+
+Os CSVs são recalculados com os parâmetros desta execução. Os objetos `projecoes`
+(memórias e regras de cada cenário), `anual` e `resumo_bi` ficam disponíveis durante
+a execução do relatório.
+
+```{r sessao}
+sessionInfo()
+```
