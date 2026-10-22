@@ -1,4 +1,4 @@
-# Especificação para a próxima etapa: base teste sintética
+# Especificação e andamento da base teste sintética
 
 ## Objetivo e escopo inicial
 
@@ -6,7 +6,10 @@ Gerar uma base aleatória reprodutível que permita testar os relatórios sem ac
 as fontes identificadas. O alvo inicial é a base final com 60 colunas, mais uma
 tabela auxiliar de contribuição por NB. A simulação das fontes brutas e de
 Mantidos é uma segunda camada para testar os cruzamentos e as regras de situação.
-Nada foi gerado ainda; esta é a especificação do próximo trabalho.
+A primeira entrega já está disponível: CSV com 30 benefícios e as 61 colunas
+integradas, gerador em R, esquema e manifesto. As 61 colunas correspondem às 60
+anteriores mais `qt_anos_contribuicao`. Ainda não foram gerados os formatos
+Parquet/DuckDB nem as fontes brutas ou Mantidos.
 
 O esquema final foi extraído da tabela de metadados do HTML recebido, sem usar
 seus registros individuais. As descrições derivam dos roteiros e não substituem
@@ -47,7 +50,7 @@ populacional nem como reprodução da distribuição dos dados reais.
 
 Não será feita amostragem de registros dos HTMLs nem reutilização de pessoas,
 CPFs ou NBs reais. Um manifesto externo aos dados indicará que toda a execução é
-sintética, preservando o layout exato de 60 colunas.
+sintética, preservando o layout integrado de 61 colunas na primeira entrega.
 
 ## Coerência esperada nos dados normais
 

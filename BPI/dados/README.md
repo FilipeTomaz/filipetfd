@@ -1,6 +1,8 @@
-# Dados locais do BPI
+# Dados do BPI
 
-Esta pasta está reservada para a próxima etapa. Ainda não foram gerados dados.
-Os arquivos de dados são ignorados pelo Git; este README permanece versionado.
-A base teste deverá ser inteiramente sintética, sem copiar linhas dos HTMLs ou
-identificadores das fontes reais. O esquema esperado está em `../esquemas/`.
+O [exemplo sintético](sinteticos/README.md) contém 30 linhas e 61 colunas e está
+versionado no Git. É a única exceção à regra de ignorar os arquivos desta pasta.
+Nenhuma linha ou identificador foi copiado das fontes reais.
+
+Arquivos adicionais de dados permanecem ignorados pelo Git. O esquema de leitura
+está em `../esquemas/banco_beneficio_cad_rais_61.csv`.

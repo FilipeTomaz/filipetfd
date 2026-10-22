@@ -2,7 +2,13 @@
 
 Projeto para estudar a base identificada de benefícios integrada ao CadÚnico e à
 RAIS e preparar uma base inteiramente sintética com o mesmo formato e relações.
-Esta etapa organiza e documenta os anexos. **A base teste ainda não foi gerada.**
+Os anexos estão organizados e já existe um **exemplo sintético com 30 linhas e
+61 colunas**, incluindo anos de contribuição.
+
+- [Ver o CSV sintético](dados/sinteticos/bpi_sintetico_61.csv)
+- [Ler as instruções e convenções](dados/sinteticos/README.md)
+- [Gerador em R](scripts/gerar_base_sintetica.R)
+- [Esquema das 61 variáveis](esquemas/banco_beneficio_cad_rais_61.csv)
 
 ## O que está sendo feito nos arquivos
 
@@ -60,10 +66,32 @@ pipeline executável do BPI. Possuem caminhos locais fixos, operações que recr
 arquivos e trechos de diagnóstico adicionados ao final. Não foram executados;
 serão adaptados para as pastas e os dados sintéticos do projeto na próxima etapa.
 
-## Próxima etapa
+## Exemplo sintético disponível
 
-Gerar dados aleatórios reprodutíveis, mantendo o esquema de 60 colunas, chaves
-NB/CPF coerentes, combinações de localização CadÚnico/RAIS, renda familiar,
-datas e uma tabela auxiliar de contribuição. Os parâmetros de tamanho, semente,
-frequências e ausências serão explícitos; o resultado será uma base de teste
-funcional, sem pretensão de representar a distribuição real da população.
+Abra `BPI.Rproj` e execute, sem instalar pacotes adicionais:
+
+```r
+source("scripts/gerar_base_sintetica.R")
+esquema <- read.csv("esquemas/banco_beneficio_cad_rais_61.csv", colClasses="character")
+base <- ler_bpi_sintetico("dados/sinteticos/bpi_sintetico_61.csv", esquema)
+dim(base)  # 30 × 61
+# Para gerar novamente, com tamanho e semente configuráveis:
+gerar_exemplo_bpi(n_beneficios=30, semente=20261022)
+```
+
+CSV não preserva tipos físicos; a função de leitura usa o esquema para manter
+identificadores como texto e converter datas/números. Os domínios ainda não
+confirmados usam convenções sintéticas documentadas, incluindo marcadores
+`SIM_*`. Não foram usadas linhas das fontes reais.
+
+Para validar o exemplo padrão, execute `Rscript testes/testar_base_sintetica.R`
+na pasta BPI. Os testes verificam estrutura, relações, ausência versus zero,
+cronologia e reprodutibilidade. O teste do arquivo versionado espera 30 linhas;
+ao substituir o exemplo por outro tamanho, ajuste essa expectativa.
+
+## Próximas etapas
+
+Adaptar os relatórios para a base sintética, gerar versões Parquet/DuckDB com os
+tipos físicos do esquema e, se necessário, simular as fontes brutas e Mantidos.
+O CSV atual testa o formato final e relações; não tem representatividade
+populacional.

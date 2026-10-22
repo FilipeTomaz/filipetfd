@@ -13,3 +13,10 @@ dados/*
 saidas/*
 !saidas/README.md
 referencia/relatorios/
+
+# Apenas o exemplo inteiramente sintético é versionado.
+!dados/sinteticos/
+dados/sinteticos/*
+!dados/sinteticos/README.md
+!dados/sinteticos/bpi_sintetico_61.csv
+!dados/sinteticos/manifesto.csv

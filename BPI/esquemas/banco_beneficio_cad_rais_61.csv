@@ -1,0 +1,62 @@
+ordem,variavel,grupo,tipo_duckdb
+1,nb,INSS — identificação,VARCHAR
+2,clientela_codigo,INSS — identificação,VARCHAR
+3,clientela,INSS — identificação,VARCHAR
+4,nb_anterior,INSS — identificação,VARCHAR
+5,especie,INSS — benefício,INTEGER
+6,especie_nome,INSS — benefício,VARCHAR
+7,cid,INSS — benefício,VARCHAR
+8,despacho_codigo,INSS — benefício,VARCHAR
+9,despacho,INSS — benefício,VARCHAR
+10,sexo_codigo,INSS — beneficiário,VARCHAR
+11,sexo,INSS — beneficiário,VARCHAR
+12,vl_juros_atrasados,INSS — valores,DOUBLE
+13,vl_correcao_monetaria,INSS — valores,DOUBLE
+14,vl_rmi,INSS — valores,DOUBLE
+15,vl_rmi_convertido,INSS — valores,DOUBLE
+16,rmi_em_sm,INSS — valores,DOUBLE
+17,dt_ddb,INSS — datas,DATE
+18,dt_dib,INSS — datas,DATE
+19,dt_der,INSS — datas,DATE
+20,dt_dii,INSS — datas,DATE
+21,dt_nascimento,INSS — beneficiário,DATE
+22,uf,INSS — localização,VARCHAR
+23,uf_processadora,INSS — localização,VARCHAR
+24,municipio_codigo,INSS — localização,VARCHAR
+25,municipio,INSS — localização,VARCHAR
+26,cpf,Identificação do titular,VARCHAR
+27,localizado_cadunico,CadÚnico — cruzamento,VARCHAR
+28,uf_cad,CadÚnico — localização,VARCHAR
+29,municipio_cad_ibge,CadÚnico — localização,VARCHAR
+30,cod_local_domici_fam,CadÚnico — domicílio,INTEGER
+31,cod_deficiencia_memb,CadÚnico — deficiência,DOUBLE
+32,ind_def_cegueira_memb,CadÚnico — deficiência,DOUBLE
+33,ind_def_baixa_visao_memb,CadÚnico — deficiência,DOUBLE
+34,ind_def_surdez_profunda_memb,CadÚnico — deficiência,DOUBLE
+35,ind_def_surdez_leve_memb,CadÚnico — deficiência,DOUBLE
+36,ind_def_fisica_memb,CadÚnico — deficiência,DOUBLE
+37,ind_def_mental_memb,CadÚnico — deficiência,DOUBLE
+38,ind_def_sindrome_down_memb,CadÚnico — deficiência,DOUBLE
+39,ind_def_transtorno_mental_memb,CadÚnico — deficiência,DOUBLE
+40,cod_curso_frequentou_pessoa_memb,CadÚnico — escolaridade,DOUBLE
+41,cod_trabalho_12_meses_memb,CadÚnico — trabalho,DOUBLE
+42,qtd_meses_12_meses_memb,CadÚnico — trabalho,DOUBLE
+43,val_renda_bruta_12_meses_memb,CadÚnico — renda,DOUBLE
+44,localizado_rais,RAIS — cruzamento,VARCHAR
+45,vinculo_ativo_3112,RAIS — vínculo,INTEGER
+46,tipo_vinculo,RAIS — vínculo,VARCHAR
+47,tipo_admissao,RAIS — vínculo,VARCHAR
+48,mes_admissao,RAIS — vínculo,BIGINT
+49,faixa_tempo_emprego,RAIS — emprego,VARCHAR
+50,tempo_emprego,RAIS — emprego,DOUBLE
+51,faixa_remuneracao_media_sm,RAIS — remuneração,VARCHAR
+52,remuneracao_media_sm,RAIS — remuneração,DOUBLE
+53,valor_remuneracao_media,RAIS — remuneração,DOUBLE
+54,cbo_1994,RAIS — ocupação,VARCHAR
+55,cbo_2002,RAIS — ocupação,VARCHAR
+56,cnae_1,RAIS — atividade econômica,VARCHAR
+57,cnae_2,RAIS — atividade econômica,VARCHAR
+58,vl_renda_media_fam,CadÚnico — renda familiar,DOUBLE
+59,vl_renda_total_fam,CadÚnico — renda familiar,DOUBLE
+60,qt_membro_familia,CadÚnico — composição familiar,INTEGER
+61,qt_anos_contribuicao,INSS — anos de contribuição,DOUBLE

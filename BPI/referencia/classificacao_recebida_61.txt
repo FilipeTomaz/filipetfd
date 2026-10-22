@@ -1,0 +1,122 @@
+Sim. Abaixo está a relação completa das 61 variáveis da base integrada INSS–CadÚnico–RAIS, mantendo as três colunas anteriores e acrescentando uma quarta com o tipo de dado identificado no DuckDB.
+
+Os tipos foram recuperados da estrutura exibida no R Markdown (`DESCRIBE SELECT * FROM tb_beneficio`), incluindo a variável adicional `qt_anos_contribuicao`.
+
+## Dicionário das 61 variáveis
+
+| Nº | Variável                           | Origem / grupo                 | Tipo DuckDB |
+| -- | ---------------------------------- | ------------------------------ | ----------- |
+| 1  | `nb`                               | INSS — identificação           | `VARCHAR`   |
+| 2  | `clientela_codigo`                 | INSS — identificação           | `VARCHAR`   |
+| 3  | `clientela`                        | INSS — identificação           | `VARCHAR`   |
+| 4  | `nb_anterior`                      | INSS — identificação           | `VARCHAR`   |
+| 5  | `especie`                          | INSS — benefício               | `INTEGER`   |
+| 6  | `especie_nome`                     | INSS — benefício               | `VARCHAR`   |
+| 7  | `cid`                              | INSS — benefício               | `VARCHAR`   |
+| 8  | `despacho_codigo`                  | INSS — benefício               | `VARCHAR`   |
+| 9  | `despacho`                         | INSS — benefício               | `VARCHAR`   |
+| 10 | `sexo_codigo`                      | INSS — beneficiário            | `VARCHAR`   |
+| 11 | `sexo`                             | INSS — beneficiário            | `VARCHAR`   |
+| 12 | `vl_juros_atrasados`               | INSS — valores                 | `DOUBLE`    |
+| 13 | `vl_correcao_monetaria`            | INSS — valores                 | `DOUBLE`    |
+| 14 | `vl_rmi`                           | INSS — valores                 | `DOUBLE`    |
+| 15 | `vl_rmi_convertido`                | INSS — valores                 | `DOUBLE`    |
+| 16 | `rmi_em_sm`                        | INSS — valores                 | `DOUBLE`    |
+| 17 | `dt_ddb`                           | INSS — datas                   | `DATE`      |
+| 18 | `dt_dib`                           | INSS — datas                   | `DATE`      |
+| 19 | `dt_der`                           | INSS — datas                   | `DATE`      |
+| 20 | `dt_dii`                           | INSS — datas                   | `DATE`      |
+| 21 | `dt_nascimento`                    | INSS — beneficiário            | `DATE`      |
+| 22 | `uf`                               | INSS — localização             | `VARCHAR`   |
+| 23 | `uf_processadora`                  | INSS — localização             | `VARCHAR`   |
+| 24 | `municipio_codigo`                 | INSS — localização             | `VARCHAR`   |
+| 25 | `municipio`                        | INSS — localização             | `VARCHAR`   |
+| 26 | `cpf`                              | Identificação do titular       | `VARCHAR`   |
+| 27 | `localizado_cadunico`              | CadÚnico — cruzamento          | `VARCHAR`   |
+| 28 | `uf_cad`                           | CadÚnico — localização         | `VARCHAR`   |
+| 29 | `municipio_cad_ibge`               | CadÚnico — localização         | `VARCHAR`   |
+| 30 | `cod_local_domici_fam`             | CadÚnico — domicílio           | `INTEGER`   |
+| 31 | `cod_deficiencia_memb`             | CadÚnico — deficiência         | `DOUBLE`    |
+| 32 | `ind_def_cegueira_memb`            | CadÚnico — deficiência         | `DOUBLE`    |
+| 33 | `ind_def_baixa_visao_memb`         | CadÚnico — deficiência         | `DOUBLE`    |
+| 34 | `ind_def_surdez_profunda_memb`     | CadÚnico — deficiência         | `DOUBLE`    |
+| 35 | `ind_def_surdez_leve_memb`         | CadÚnico — deficiência         | `DOUBLE`    |
+| 36 | `ind_def_fisica_memb`              | CadÚnico — deficiência         | `DOUBLE`    |
+| 37 | `ind_def_mental_memb`              | CadÚnico — deficiência         | `DOUBLE`    |
+| 38 | `ind_def_sindrome_down_memb`       | CadÚnico — deficiência         | `DOUBLE`    |
+| 39 | `ind_def_transtorno_mental_memb`   | CadÚnico — deficiência         | `DOUBLE`    |
+| 40 | `cod_curso_frequentou_pessoa_memb` | CadÚnico — escolaridade        | `DOUBLE`    |
+| 41 | `cod_trabalho_12_meses_memb`       | CadÚnico — trabalho            | `DOUBLE`    |
+| 42 | `qtd_meses_12_meses_memb`          | CadÚnico — trabalho            | `DOUBLE`    |
+| 43 | `val_renda_bruta_12_meses_memb`    | CadÚnico — renda               | `DOUBLE`    |
+| 44 | `localizado_rais`                  | RAIS — cruzamento              | `VARCHAR`   |
+| 45 | `vinculo_ativo_3112`               | RAIS — vínculo                 | `INTEGER`   |
+| 46 | `tipo_vinculo`                     | RAIS — vínculo                 | `VARCHAR`   |
+| 47 | `tipo_admissao`                    | RAIS — vínculo                 | `VARCHAR`   |
+| 48 | `mes_admissao`                     | RAIS — vínculo                 | `BIGINT`    |
+| 49 | `faixa_tempo_emprego`              | RAIS — emprego                 | `VARCHAR`   |
+| 50 | `tempo_emprego`                    | RAIS — emprego                 | `DOUBLE`    |
+| 51 | `faixa_remuneracao_media_sm`       | RAIS — remuneração             | `VARCHAR`   |
+| 52 | `remuneracao_media_sm`             | RAIS — remuneração             | `DOUBLE`    |
+| 53 | `valor_remuneracao_media`          | RAIS — remuneração             | `DOUBLE`    |
+| 54 | `cbo_1994`                         | RAIS — ocupação                | `VARCHAR`   |
+| 55 | `cbo_2002`                         | RAIS — ocupação                | `VARCHAR`   |
+| 56 | `cnae_1`                           | RAIS — atividade econômica     | `VARCHAR`   |
+| 57 | `cnae_2`                           | RAIS — atividade econômica     | `VARCHAR`   |
+| 58 | `vl_renda_media_fam`               | CadÚnico — renda familiar      | `DOUBLE`    |
+| 59 | `vl_renda_total_fam`               | CadÚnico — renda familiar      | `DOUBLE`    |
+| 60 | `qt_membro_familia`                | CadÚnico — composição familiar | `INTEGER`   |
+| 61 | `qt_anos_contribuicao`             | INSS — anos de contribuição    | `DOUBLE`    |
+
+## Como interpretar os tipos
+
+| Tipo      | Significado                                   | Exemplo                                     |
+| --------- | --------------------------------------------- | ------------------------------------------- |
+| `VARCHAR` | Texto ou identificador alfanumérico           | CPF, NB, UF, códigos                        |
+| `INTEGER` | Número inteiro                                | Espécie do benefício, quantidade de membros |
+| `BIGINT`  | Número inteiro de 64 bits                     | Mês de admissão                             |
+| `DOUBLE`  | Número numérico com possibilidade de decimais | Renda, remuneração, anos de contribuição    |
+| `DATE`    | Data de calendário                            | DIB, DER, nascimento                        |
+
+### Atenções para a análise estatística
+
+1\. Nem toda variável numérica é contínua. Por exemplo, `cod_deficiencia_memb` e os indicadores `ind_def_*` estão armazenados como `DOUBLE`, mas conceitualmente são variáveis categóricas ou indicadoras. Não seria adequado calcular sua média sem considerar a codificação.
+
+2\. Nem todo `VARCHAR` é uma variável qualitativa substantiva. CPF, NB e códigos de municípios são identificadores. Devem continuar como texto, inclusive para preservar zeros à esquerda.
+
+3\. `qt_anos_contribuicao` é `DOUBLE`. Isso permite calcular média, mediana e quartis. Contudo, o fato de a variável estar preenchida com zero não significa necessariamente ausência real de contribuição, sobretudo no caso rural.
+
+4\. `vinculo_ativo_3112` é `INTEGER`. Para utilizá-la como indicador de vínculo ativo, precisamos conferir os valores observados e confirmar sua codificação.
+
+### Conferência diretamente no RStudio
+
+Se quiser validar a estrutura atual do Parquet com as 61 variáveis, execute:
+
+```
+library(DBI)
+library(duckdb)
+
+con <- dbConnect(duckdb(), dbdir = ":memory:")
+
+caminho <- "E:/01_Bases/09_PREVIDENCIA/04_Dados/Saidas/banco_beneficio_cad_rais.parquet"
+
+estrutura <- dbGetQuery(
+  con,
+  sprintf(
+    "DESCRIBE SELECT * FROM read_parquet(%s)",
+    as.character(dbQuoteString(con, caminho))
+  )
+)
+
+# Relação de nomes e tipos
+print(estrutura[, c("column_name", "column_type")])
+
+# Quantidade de variáveis por tipo
+print(as.data.frame(table(estrutura$column_type)))
+
+dbDisconnect(con, shutdown = TRUE)
+```
+
+Essa consulta é feita somente sobre o esquema do Parquet; não é necessário carregar os milhões de registros na memória do R.
+
+Sugestão para a próxima etapa: transformar essa tabela em um dicionário de dados completo, acrescentando uma quinta coluna com a classificação estatística (identificadora, nominal, ordinal, discreta ou contínua) e uma sexta com a descrição de cada variável. Isso ajudará bastante na modelagem econométrica e na análise das espécies 21, 41 e 88.

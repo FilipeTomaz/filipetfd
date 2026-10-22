@@ -80,4 +80,4 @@ Use `exportar_csv = FALSE` para não gravar os CSVs.
 
 O estudo da base identificada de benefícios, CadÚnico e RAIS está organizado
 na pasta [BPI](BPI/README.md), com códigos de referência, esquema de 60 colunas
-e especificação para gerar uma base sintética em uma próxima etapa.
+e um exemplo sintético de 30 linhas e 61 colunas, com gerador reprodutível em R.
