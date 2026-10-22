@@ -1,5 +1,7 @@
 # Aposentadoria rural: cenário de 60% elegíveis
 
+[Ver a nova apresentação com as três tabelas comparativas](tres-cenarios/README.md)
+
 Apresentação com cinco slides. A referência mantém as regras atuais, sem redução
 adicional de elegibilidade; a proposta considera 60% do fluxo elegível, ambos os
 sexos aos 65 anos e transição de 2027 a 2036. Valores reais de 2026.
