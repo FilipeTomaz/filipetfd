@@ -1,0 +1,576 @@
+---
+title: "INSS Mantidos — Diagnóstico robusto dos cabeçalhos para integração"
+subtitle: "Codificação de arquivos, delimitadores, mapeamento de NB e situação em julho de 2026"
+output:
+  html_document:
+    theme: darkly
+    highlight: zenburn
+    toc: true
+    toc_float: true
+    df_print: paged
+params:
+  pasta_mantidos: "E:/01_Bases/09_PREVIDENCIA/04_Dados/Mantidos"
+  data_referencia: "2026-07-31"
+---
+
+<style>
+body { color: #e8e8e8; }
+pre, pre code { background-color: #26282b; color: #e8e8e8; }
+table { color: #e8e8e8; }
+table th, table td { border-color: #555; }
+.table-responsive { overflow-x: auto; width: 100%; }
+</style>
+
+## Objetivo
+
+O inventário anterior encontrou **19 arquivos CSV (105,92 GiB)**. Nesta etapa, o objetivo é identificar, **localmente**, os nomes das colunas de cada CSV, a compatibilidade entre os arquivos e os possíveis campos relativos a NB, situação, cessação e competência; depois, desenhar um cruzamento controlado com Concedidos. **A execução padrão não divulga nem exporta NB, CPF ou linhas individuais.**
+
+Não é necessário percorrer os 106 GiB para localizar os nomes das colunas. A tentativa anterior com `data.table::fread(nrows = 0)` falhou nos **19 arquivos** com a mensagem `input string 1 is invalid`. **Isso não demonstra que o arquivo esteja corrompido:** pode ser codificação incompatível (Windows-1252/Latin-1, UTF-16), BOM, delimitador ou outra particularidade. A versão abaixo inspeciona somente os bytes iniciais e o cabeçalho de cada CSV, com tratamento de erros por arquivo.
+
+**Cuidado:** nomes de colunas não são registros pessoais, mas ainda podem conter nomenclaturas operacionais. Mantenha o relatório HTML local. O diagnóstico de UTF-16 utiliza uma única linha do arquivo; para os demais formatos, lê no máximo 512 KiB iniciais.
+
+## 1. Configuração
+
+```{r configuracao, message=FALSE, warning=FALSE}
+library(data.table)
+library(knitr)
+
+# Data-alvo provisória: não representa, por si, competência confirmada dos CSVs.
+data_referencia <- as.Date(params$data_referencia)
+stopifnot(!is.na(data_referencia))
+
+pasta_mantidos <- params$pasta_mantidos
+stopifnot(dir.exists(pasta_mantidos))
+
+arquivos <- list.files(
+  pasta_mantidos,
+  pattern = "\\.csv$",
+  full.names = TRUE,
+  recursive = TRUE,
+  ignore.case = TRUE
+)
+
+if (!length(arquivos)) stop("Nenhum CSV encontrado na pasta indicada.")
+
+# O nome dos arquivos pode revelar estrutura operacional: mantenha o HTML local.
+cat("Arquivos CSV identificados:", length(arquivos), "\n")
+cat("Data de referência proposta:", format(data_referencia, "%d/%m/%Y"), "\n")
+```
+
+## 2. Diagnóstico dos bytes iniciais, codificação e delimitador
+
+Primeiro reconhecemos BOMs e a presença de bytes nulos, típicos de UTF-16. Depois tentamos interpretar o **primeiro registro do CSV** como cabeçalho, com conversão para UTF-8 quando necessário. Não são impressos valores de nenhuma linha de dados.
+
+```{r esquemas, results='asis', message=FALSE, warning=FALSE}
+# Limite de leitura para arquivos de codificação de um byte.
+max_bytes_cabecalho <- 512L * 1024L
+
+# Retorna apenas uma pequena amostra de bytes do início do arquivo.
+ler_bytes_iniciais <- function(arq, n = max_bytes_cabecalho) {
+  con_bin <- file(arq, open = "rb")
+  on.exit(close(con_bin), add = TRUE)
+  readBin(con_bin, what = "raw", n = n)
+}
+
+# Heurística de formato, sem afirmar que a codificação seja conhecida.
+identificar_codificacao <- function(bytes) {
+  n <- length(bytes)
+  if (n >= 3L && identical(as.integer(bytes[1:3]), c(239L, 187L, 191L)))
+    return("UTF-8-BOM")
+  if (n >= 2L && identical(as.integer(bytes[1:2]), c(255L, 254L)))
+    return("UTF-16LE")
+  if (n >= 2L && identical(as.integer(bytes[1:2]), c(254L, 255L)))
+    return("UTF-16BE")
+  if (n >= 2L && identical(as.integer(bytes[1:2]), c(31L, 139L)))
+    return("GZIP (não é CSV texto simples)")
+  if (n >= 4L && identical(as.integer(bytes[1:4]), c(80L, 75L, 3L, 4L)))
+    return("ZIP (não é CSV texto simples)")
+
+  am <- as.integer(head(bytes, 8192L))
+  if (length(am) >= 20L) {
+    frac_par <- mean(am[seq(2L, length(am), by = 2L)] == 0L)
+    frac_impar <- mean(am[seq(1L, length(am), by = 2L)] == 0L)
+    if (frac_par > 0.30 && frac_impar < 0.10) return("UTF-16LE-provável")
+    if (frac_impar > 0.30 && frac_par < 0.10) return("UTF-16BE-provável")
+  }
+  "8 bits: testar UTF-8, Windows-1252 e Latin-1"
+}
+
+# Converte a primeira linha (em bytes) em texto UTF-8.
+# UTF-16 usa conexão com conversão, lendo apenas a primeira linha.
+primeira_linha_cabecalho <- function(arq, bytes, formato) {
+  if (grepl("^UTF-16", formato)) {
+    enc <- if (grepl("LE", formato, fixed = TRUE)) "UTF-16LE" else "UTF-16BE"
+    con_txt <- file(arq, open = "rt", encoding = enc)
+    on.exit(close(con_txt), add = TRUE)
+    linhas <- readLines(con_txt, n = 2L, warn = FALSE)
+    if (!length(linhas)) stop("Não foi possível ler o cabeçalho UTF-16")
+    linhas <- sub("^\ufeff", "", linhas)
+    idx <- if (grepl("^sep=.$", linhas[1L], ignore.case = TRUE)) 2L else 1L
+    if (length(linhas) < idx) stop("Arquivo contém diretiva sep=, mas não contém cabeçalho")
+    return(list(linha = linhas[idx], codificacao = enc))
+  }
+
+  # Localiza o primeiro fim de linha na amostra binária.
+  # Se houver a diretiva sep=;, considera o segundo registro.
+  pos_lf <- which(bytes == as.raw(10L))
+  if (!length(pos_lf)) stop("Cabeçalho não termina nos primeiros 512 KiB")
+
+  converter_linha <- function(inicio, fim) {
+    linha_raw <- if (fim >= inicio) bytes[inicio:fim] else raw(0L)
+    if (length(linha_raw) && tail(linha_raw, 1L) == as.raw(13L))
+      linha_raw <- head(linha_raw, -1L)
+    if (length(linha_raw) >= 3L &&
+        identical(as.integer(linha_raw[1:3]), c(239L, 187L, 191L)))
+      linha_raw <- linha_raw[-(1:3)]
+    if (!length(linha_raw)) stop("Linha inicial vazia")
+
+    entrada <- rawToChar(linha_raw)
+    for (enc in c("UTF-8", "CP1252", "latin1")) {
+      saida <- suppressWarnings(iconv(entrada, from = enc, to = "UTF-8", sub = NA))
+      if (length(saida) && !is.na(saida) && nzchar(saida))
+        return(list(linha = saida, codificacao = enc))
+    }
+    stop("Não foi possível converter o cabeçalho para UTF-8")
+  }
+
+  primeira <- converter_linha(1L, pos_lf[1L] - 1L)
+  if (!grepl("^sep=.$", primeira$linha, ignore.case = TRUE)) return(primeira)
+  if (length(pos_lf) < 2L) stop("Diretiva sep= identificada, mas segunda linha não disponível")
+  converter_linha(pos_lf[1L] + 1L, pos_lf[2L] - 1L)
+}
+
+# Interpreta campos respeitando campos entre aspas e delimitadores internos.
+separar_campos <- function(linha, sep) {
+  dados <- tryCatch(utils::read.table(
+    text = linha, header = FALSE, sep = sep, quote = '\"',
+    comment.char = "", fill = TRUE, check.names = FALSE,
+    stringsAsFactors = FALSE, na.strings = character(),
+    colClasses = "character"
+  ), error = function(e) NULL)
+  if (is.null(dados) || nrow(dados) == 0L) return(character())
+  as.character(unlist(dados[1L, , drop = TRUE], use.names = FALSE))
+}
+
+ler_esquema <- function(arq) {
+  formato <- "não identificado"
+  tryCatch({
+    bytes <- ler_bytes_iniciais(arq)
+    if (!length(bytes)) stop("Arquivo vazio")
+    formato <- identificar_codificacao(bytes)
+    if (grepl("^(GZIP|ZIP)", formato))
+      stop("Formato compactado: requer tratamento específico")
+
+    cab <- primeira_linha_cabecalho(arq, bytes, formato)
+    linha <- cab$linha
+    tentativas <- lapply(c(";", ",", "\t", "|"), function(sep) {
+      tryCatch(separar_campos(linha, sep), error = function(e) character())
+    })
+    quantidades <- lengths(tentativas)
+    melhor <- which.max(quantidades)
+    nomes <- tentativas[[melhor]]
+    if (length(nomes) <= 1L)
+      stop("Não foi identificado separador com mais de uma coluna")
+    if (any(!nzchar(trimws(nomes))))
+      stop("Há nomes de colunas vazios no cabeçalho")
+
+    data.table(
+      arquivo = basename(arq),
+      posicao = seq_along(nomes),
+      coluna = nomes,
+      codificacao = cab$codificacao,
+      separador = c(";", ",", "TAB", "|")[[melhor]],
+      formato_bytes = formato,
+      erro = NA_character_
+    )
+  }, error = function(e) {
+    data.table(
+      arquivo = basename(arq), posicao = NA_integer_,
+      coluna = NA_character_, codificacao = NA_character_,
+      separador = NA_character_, formato_bytes = formato,
+      erro = conditionMessage(e)
+    )
+  })
+}
+
+esquemas <- rbindlist(lapply(arquivos, ler_esquema), fill = TRUE)
+
+resumo_esquemas <- esquemas[, .(
+  n_colunas = sum(!is.na(coluna)),
+  codificacao = paste(unique(na.omit(codificacao)), collapse = " / "),
+  separador = paste(unique(na.omit(separador)), collapse = " / "),
+  formato_bytes = paste(unique(formato_bytes), collapse = " / "),
+  erro_leitura = paste(unique(na.omit(erro)), collapse = "; ")
+), by = arquivo][order(arquivo)]
+
+print(knitr::kable(resumo_esquemas, format = "html"))
+cat("\n\n")
+
+sucesso <- sum(resumo_esquemas$n_colunas > 0L)
+cat(sprintf("**Cabeçalhos interpretados: %d de %d arquivos.**\n\n", sucesso, length(arquivos)))
+if (sucesso < length(arquivos)) {
+  cat("**Atenção:** há falhas pendentes. Não concluir que os esquemas são iguais e não iniciar a integração integral.\n\n")
+} else {
+  cat("Todos os cabeçalhos foram interpretados. Ainda falta validar os dados, a competência e os códigos de situação.\n\n")
+}
+```
+
+**Interpretação:** as codificações são estimadas apenas para ler corretamente os nomes. Em arquivos de 8 bits, o cabeçalho pode ser compatível com mais de uma codificação; isso não valida a codificação de todas as linhas. A informação de `separador` será útil para a futura leitura dos CSVs completos.
+
+## 3. Campos candidatos para a integração
+
+Os candidatos abaixo são escolhidos **exclusivamente pelo nome da coluna**, sem consultar valores individuais. Isso evita divulgar dados sensíveis e ajuda a detectar nomenclaturas alternativas.
+
+```{r candidatos, results='asis', message=FALSE, warning=FALSE}
+normalizar_nome <- function(x) {
+  x <- iconv(x, from = "", to = "ASCII//TRANSLIT", sub = "")
+  x <- tolower(x)
+  gsub("[^a-z0-9]", "", x)
+}
+
+candidatos <- copy(esquemas[!is.na(coluna)])
+candidatos[, nome_normalizado := normalizar_nome(coluna)]
+
+candidatos[, categoria := fifelse(
+  grepl("(^nb$|numerobenef|nbenef|beneficio|beneficioid)", nome_normalizado),
+  "Chave / identificacao",
+  fifelse(
+    grepl("situac|status|estado|ativo|manutenc|suspens|bloque", nome_normalizado),
+    "Situacao do beneficio",
+    fifelse(
+      grepl("cess|obito|encerr|cancel|termino|fimbenef", nome_normalizado),
+      "Cessacao / termino",
+      fifelse(
+        grepl("compet|referenc|anomes|mesano|periodo|dataposicao|databas", nome_normalizado),
+        "Competencia / referencia",
+        fifelse(
+          grepl("^dt|^data|dib|ddb|der|implant|inicio|despacho", nome_normalizado),
+          "Outras datas",
+          NA_character_
+        )
+      )
+    )
+  )
+)]
+
+campos_candidatos <- unique(candidatos[!is.na(categoria),
+  .(arquivo, posicao, coluna, categoria)
+])[order(categoria, arquivo, posicao)]
+
+if (nrow(campos_candidatos)) {
+  cat("\n\n")
+  print(knitr::kable(campos_candidatos, format = "html"))
+  cat("\n\n")
+} else {
+  cat("\nNão foram identificados nomes candidatos pelos padrões iniciais. Examine a listagem completa de nomes no próximo bloco.\n\n")
+}
+```
+
+## 4. O esquema é uniforme nos 19 CSVs?
+
+```{r consistencia_esquemas, results='asis', message=FALSE, warning=FALSE}
+colunas_validas <- esquemas[!is.na(coluna)]
+
+frequencia_colunas <- colunas_validas[, .(
+  n_arquivos = uniqueN(arquivo)
+), by = coluna][order(n_arquivos, coluna)]
+
+n_arquivos_lidos <- uniqueN(colunas_validas$arquivo)
+colunas_comuns <- frequencia_colunas[n_arquivos == n_arquivos_lidos]
+colunas_variaveis <- frequencia_colunas[n_arquivos < n_arquivos_lidos]
+
+cat("Arquivos com cabeçalho interpretado:", n_arquivos_lidos, "de", length(arquivos), "\n\n")
+if (n_arquivos_lidos < length(arquivos)) {
+  cat("**Resultado parcial:** as frequências abaixo consideram apenas arquivos lidos com sucesso.\n\n")
+}
+cat("Colunas presentes em todos os arquivos interpretados:", nrow(colunas_comuns), "\n\n")
+cat("Colunas ausentes em pelo menos um arquivo:", nrow(colunas_variaveis), "\n\n")
+
+cat("\n### Colunas com presença variável\n\n")
+if (nrow(colunas_variaveis)) {
+  print(knitr::kable(colunas_variaveis, format = "html"))
+} else if (n_arquivos_lidos == length(arquivos)) {
+  cat("Todos os arquivos foram interpretados; nenhuma divergência de nomes detectada.\n\n")
+} else {
+  cat("Comparação inconclusiva: nem todos os cabeçalhos foram interpretados.\n\n")
+}
+
+# Checa também a ordem: importante para evitar leituras por posição de coluna.
+assinaturas <- colunas_validas[order(arquivo, posicao), .(
+  assinatura = paste(coluna, collapse = " | ")
+), by = arquivo]
+if (n_arquivos_lidos == 0L) {
+  cat("\n\nSequências distintas: não avaliável (nenhum arquivo lido).\n\n")
+} else {
+  cat("\n\nNúmero de sequências de colunas distintas nos arquivos interpretados:",
+      uniqueN(assinaturas$assinatura), "\n\n")
+}
+```
+
+## 5. Listagem completa de nomes das variáveis
+
+Exibe todos os nomes de colunas, mas nenhum valor. Você pode examinar essa tabela localmente para descobrir variáveis que os padrões de busca não reconheceram.
+
+```{r lista_colunas, results='asis', message=FALSE, warning=FALSE}
+# Uma linha por nome distinto, com contagem de arquivos onde aparece.
+nomes_disponiveis <- colunas_validas[, .(
+  presente_em_n_arquivos = uniqueN(arquivo)
+), by = coluna][order(coluna)]
+
+if (nrow(nomes_disponiveis)) {
+  print(knitr::kable(nomes_disponiveis, format = "html"))
+} else {
+  cat("**Nenhum nome recuperado.** O diagnóstico de codificação da seção 2 precisa ser resolvido antes de mapear os campos.\n\n")
+}
+```
+
+## 6. Data-alvo e universo de comparação
+
+A referência proposta passa a ser **31/07/2026**, para aproximar a posição de Mantidos da cobertura da base de Concedidos. No inventário e no relatório anterior de Concedidos aparecem decisões até **30/06/2026**; por isso, **julho de 2026 é uma referência analítica proposta, não uma data de cobertura comprovada**. Data de modificação do arquivo não é competência do benefício.
+
+Antes de classificar qualquer NB como ativo/cessado em 31/07/2026, precisaremos confirmar **qual competência ou data de posição os 19 arquivos representam**, e se existe histórico, data de cessação ou apenas uma fotografia do estoque.
+
+```{r escopo_temporal, echo=TRUE}
+# Apenas registra o recorte pretendido, sem ler linhas de Mantidos.
+data_limite_concedidos <- as.Date("2026-06-30")
+stopifnot(data_referencia >= data_limite_concedidos)
+
+escopo <- data.table(
+  elemento = c("Referência proposta para situação", "Última DDB observada no relatório de Concedidos", "Unidade de ligação", "Regra para ausência em Mantidos"),
+  definicao = c(format(data_referencia, "%d/%m/%Y"), format(data_limite_concedidos, "%d/%m/%Y"), "Número do benefício (NB)", "Não classificar automaticamente como cessado")
+)
+knitr::kable(escopo, format = "html")
+```
+
+## 7. Fluxo de integração proposto
+
+O desenho abaixo **não é executado automaticamente**; cada etapa depende da validação da anterior.
+
+| Etapa | Operação | Leitura necessária | Saída/critério de avanço |
+|:--|:--|:--|:--|
+| **A. Inventário e esquema** | Verificar 19 cabeçalhos, delimitador e nomes de variáveis | Cabeçalhos | Nomes e estrutura coerentes, ou mapeamento por arquivo |
+| **B. Chave e temporalidade** | Identificar NB, competência/data-base, situação e cessação | Amostra local, sem exibir NBs | Mapeamento validado e unidade de observação compreendida |
+| **C. Piloto controlado** | Ler parte de um arquivo; testar NB normalizado e duplicatas | Amostra de um CSV + lista de NBs de Concedidos | Frequências agregadas, qualidade de ligação e regras de desempate |
+| **D. Varredura integral** | Ler 19 CSVs uma vez, em fluxo, projetando apenas colunas necessárias | Todos os CSVs; execução manual | Tabela reduzida de linhas *relevantes* de Mantidos, apenas em disco |
+| **E. Consolidação por NB** | Escolher última posição conhecida, preservar histórico útil e conflitos | Tabela reduzida | Uma linha por NB **após** verificar regra temporal |
+| **F. Cruzamento e auditoria** | Associar os NBs de Concedidos à tabela reduzida | Bases Parquet/DuckDB | Cobertura, duplicidades, datas discordantes e estados indeterminados |
+| **G. Classificação em julho/2026** | Aplicar regra validada às situações e datas | Tabelas consolidadas | `ativo`, `cessado` ou `indeterminado`, com fonte/data e justificativa |
+
+**Regra de segurança:** o processo pesado deve ser executado em uma sessão R dedicada, com saídas locais restritas. Nunca carregar o conjunto integral em `data.frame` ou `data.table` no R.
+
+## 8. Configuração da integração — preencher somente após examinar o diagnóstico
+
+Abaixo há um formulário de configuração **em código**, inicialmente incompleto de propósito. Não presumimos como as colunas de Mantidos são nomeadas nem o significado dos códigos de situação. `NULL` significa “ainda não identificado”.
+
+```{r mapeamento, message=FALSE, warning=FALSE}
+# Ajustar após identificar os cabeçalhos.
+# Pode ser necessário um mapeamento por arquivo, se os esquemas não forem uniformes.
+mapeamento <- list(
+  nb = NULL,
+  situacao = NULL,
+  competencia = NULL,
+  data_posicao = NULL,
+  data_cessacao = NULL,
+  data_inicio = NULL
+)
+
+# O processamento completo permanece desligado por padrão.
+executar_piloto <- FALSE
+executar_varredura_integral <- FALSE
+
+pasta_saida_integracao <- file.path(
+  dirname(pasta_mantidos), "Saidas_integracao_mantidos"
+)
+arq_concedidos <- "E:/01_Bases/09_PREVIDENCIA/04_Dados/Saidas/banco_beneficio_cad_rais.parquet"
+
+# Apenas apresenta a situação do mapeamento, sem consultar dados sensíveis.
+status_mapeamento <- data.table(
+  campo_logico = names(mapeamento),
+  coluna_identificada = vapply(
+    mapeamento, function(x) if (is.null(x)) "[pendente]" else as.character(x),
+    character(1)
+  )
+)
+knitr::kable(status_mapeamento, format = "html")
+```
+
+**Identificação mínima:** NB é indispensável. Situação e sua referência temporal devem ser identificadas para reconstruir o status; data de cessação é desejável para medir duração efetiva. Se a situação for apenas “ativo hoje”, sem data-base confirmada, não inferir retrospectivamente o status.
+
+## 9. Verificação do mapeamento contra todos os cabeçalhos
+
+Este teste **não lê linhas de dados**. A verificação é útil principalmente quando os CSVs possuem colunas em ordem distinta ou nomes diferentes.
+
+```{r validar_mapeamento, results='asis', message=FALSE, warning=FALSE}
+campos_escolhidos <- unlist(mapeamento, use.names = TRUE)
+campos_escolhidos <- campos_escolhidos[!is.na(campos_escolhidos) & nzchar(campos_escolhidos)]
+
+if (length(campos_escolhidos) == 0L) {
+  cat("Nenhuma coluna foi mapeada ainda; a inspeção dos cabeçalhos é a próxima ação.\n\n")
+} else {
+  validacao_map <- CJ(
+    arquivo = unique(esquemas$arquivo),
+    campo_logico = names(campos_escolhidos)
+  )
+  validacao_map[, coluna_escolhida := unname(campos_escolhidos[campo_logico])]
+  presentes <- unique(esquemas[!is.na(coluna), .(arquivo, coluna)])
+  validacao_map <- merge(
+    validacao_map, presentes[, presente := TRUE],
+    by.x = c("arquivo", "coluna_escolhida"),
+    by.y = c("arquivo", "coluna"), all.x = TRUE
+  )
+  validacao_map[is.na(presente), presente := FALSE]
+  print(knitr::kable(validacao_map[, .(arquivo, campo_logico, coluna_escolhida, presente)], format = "html"))
+  if (any(!validacao_map$presente)) {
+    cat("\n**Atenção:** algumas colunas mapeadas não aparecem em todos os CSVs. Corrija o mapeamento antes da varredura integral.\n\n")
+  }
+}
+```
+
+## 10. Estratégia técnica para o cruzamento eficiente
+
+A proposta é utilizar **DuckDB**, mantendo a lista de NBs de Concedidos e a tabela de ligação em disco; não se deve importar 105,92 GiB para a memória do R.
+
+1. **Chave textual:** preservar NB como texto desde a leitura (`all_varchar = TRUE` ou tipagem explícita no leitor CSV). Normalizar pontuação e espaços **nas duas fontes**. Não transformar NB em número, pois pode eliminar zeros à esquerda. Inspecionar primeiro o comprimento e o padrão esperado dos NBs, sem exibir os valores.
+2. **CSV por arquivo:** caso a estrutura seja diferente entre arquivos, construir um `SELECT` parametrizado para cada um. Evitar união por posição; usar os nomes confirmados.
+3. **Filtro por chaves:** criar uma tabela local de NBs distintos de Concedidos; percorrer os CSVs e manter **somente as linhas dos NBs de interesse**. Se existir mais de uma posição para o mesmo NB, manter essas linhas temporariamente para escolher a observação válida posteriormente.
+4. **Regra temporal:** definir se a competência equivale ao último dia do mês, a uma data de extração ou a outro marco. Não usar automaticamente a data de criação/modificação do CSV.
+5. **Duplicidade:** verificar `NB × competência` repetidos, NB em arquivos diferentes e contradições de situação. A dimensão geográfica/sexo do nome do arquivo **não garante** exclusividade.
+6. **Saídas restritas:** persistir apenas a tabela auxiliar necessária (NB, situação, data de posição, cessação, arquivo de origem) no disco local, idealmente em `.duckdb` ou Parquet, sem armazenar CPF se NB bastar.
+
+### 10.1. Modelo de preparação da lista de NBs em DuckDB
+
+Este bloco **somente executa** se `executar_piloto <- TRUE`, depois que você conferir os caminhos. Ele cria um banco **local de trabalho**, sem imprimir identificadores. Nesta etapa, a consulta percorre apenas a coluna NB do Parquet de Concedidos, não os CSVs de Mantidos.
+
+```{r preparar_nbs, message=FALSE, warning=FALSE}
+if (isTRUE(executar_piloto)) {
+  stopifnot(file.exists(arq_concedidos))
+  library(DBI)
+  library(duckdb)
+
+  dir.create(pasta_saida_integracao, recursive = TRUE, showWarnings = FALSE)
+  arq_trabalho <- file.path(pasta_saida_integracao, "integracao_mantidos.duckdb")
+  con_m <- dbConnect(duckdb(), dbdir = arq_trabalho)
+
+  # Previne SQL inválido quando o caminho contiver aspas simples.
+  esc_sql <- function(x) gsub("'", "''", normalizePath(x, winslash = "/", mustWork = TRUE), fixed = TRUE)
+
+  dbExecute(con_m, sprintf("
+    CREATE OR REPLACE TABLE concedidos_chaves AS
+    SELECT DISTINCT
+      regexp_replace(trim(CAST(nb AS VARCHAR)), '[^0-9]', '', 'g') AS nb_chave
+    FROM read_parquet('%s')
+    WHERE nb IS NOT NULL
+  ", esc_sql(arq_concedidos)))
+  dbExecute(con_m, "DELETE FROM concedidos_chaves WHERE nb_chave = ''")
+
+  print(dbGetQuery(con_m, "
+    SELECT COUNT(*) AS n_nbs_distintos,
+           MIN(LENGTH(nb_chave)) AS comprimento_min,
+           MAX(LENGTH(nb_chave)) AS comprimento_max
+    FROM concedidos_chaves
+  "))
+
+  dbDisconnect(con_m, shutdown = TRUE)
+} else {
+  cat("Preparação das chaves: desativada até a validação dos campos.\n")
+}
+```
+
+### 10.2. Piloto de ligação em uma amostra local
+
+Depois que o NB estiver mapeado, um piloto deve testar: percentual de NBs vazios, comprimento da chave, duplicidade da chave, cobertura de uma amostra e distribuição **agregada** dos códigos de situação e competência. Por segurança, ele deve ocorrer **antes** de liberar a varredura integral. O chunk seguinte verifica as condições mínimas, mas **não abre registros individuais**.
+
+```{r precondicoes_piloto, results='asis'}
+nb_configurado <- !is.null(mapeamento$nb) && nzchar(mapeamento$nb)
+cabecalhos_ok <- all(is.na(esquemas$erro)) &&
+  uniqueN(esquemas[!is.na(coluna)]$arquivo) == length(arquivos)
+nb_presente_em_todos <- nb_configurado && all(
+  vapply(arquivos, function(a) {
+    any(esquemas$arquivo == basename(a) & esquemas$coluna == mapeamento$nb)
+  }, logical(1))
+)
+
+criterios <- data.table(
+  criterio = c("19 CSVs com cabeçalho legível", "NB mapeado", "NB com mesmo nome em todos os arquivos", "Data de referência confirmada na fonte"),
+  atende = c(cabecalhos_ok, nb_configurado, nb_presente_em_todos, FALSE)
+)
+print(knitr::kable(criterios, format = "html"))
+cat("\nO último critério permanece **pendente** até a inspeção da competência dos arquivos.\n")
+```
+
+## 11. O que o processamento integral fará (não executar antes do piloto)
+
+A varredura dos 19 CSVs, de aproximadamente **106 GiB**, fica planejada para uma segunda versão de processamento, **depois** de conhecer as colunas efetivas, tipos e códigos. Para evitar um script aparentemente pronto que pudesse atribuir status incorretos, este relatório **não inicia** uma leitura integral com o mapeamento pendente.
+
+O pipeline aprovado deverá produzir, localmente, ao menos estas estruturas:
+
+| Tabela | Granularidade | Campos esperados | Função |
+|:--|:--|:--|:--|
+| `concedidos_chaves` | NB único | `nb_chave` | Universo de benefícios concedidos |
+| `mantidos_relevantes` | NB × observação de Mantidos | `nb_chave`, `situacao_bruta`, `data_posicao`, `data_cessacao`, `arquivo_origem` | Subconjunto necessário, antes de deduplicar |
+| `mantidos_consolidados` | NB único, quando a regra permitir | `nb_chave`, `ultima_posicao`, `situacao_ultima`, `data_cessacao`, `conflito` | Resultado operacional auditável |
+| `integracao_nb` | NB de Concedidos | `nb_chave`, `encontrado_mantidos`, `situacao_jul2026`, `fundamento` | Diagnóstico de cobertura e classificação |
+
+**Status a construir, após verificar o domínio:**
+
+- `ativo`: evidência temporal e código/documentação compatíveis com ativo em 31/07/2026;
+- `cessado`: evidência de cessação até 31/07/2026;
+- `indeterminado`: ausência no estoque, informação temporal insuficiente, situação desconhecida ou conflito entre registros.
+
+Se o arquivo for apenas um **estoque dos ativos em uma competência**, a falta de correspondência com Concedidos não é, por si, prova de cessação. Se houver **histórico completo de competências e evento de cessação**, será possível estimar duração observada e censurar os benefícios ativos na data de referência.
+
+## 12. Auditorias obrigatórias da futura integração
+
+O relatório final deverá publicar **apenas contagens agregadas**, sempre separadas por espécie (21, 41, 88), clientela e, quando pertinente, ano da DIB:
+
+- Total de NBs de Concedidos, localizados e não localizados em Mantidos; percentuais de cobertura.
+- Quantidade de NBs duplicados nos Mantidos e ocorrências em mais de um CSV/competência.
+- Frequência dos códigos de situação, categorias desconhecidas e proporção com data de referência confiável.
+- Quantidade de datas de cessação ausentes, futuras, anteriores à DIB ou incompatíveis com a posição.
+- Benefícios com divergência entre o último status conhecido e os eventos de cessação.
+- Resultado final `ativo` / `cessado` / `indeterminado` em **31/07/2026** somente quando sustentado pelos campos encontrados.
+
+## 13. Decisão para a próxima etapa
+
+**Primeiro execute este R Markdown sem mudar `executar_piloto` e `executar_varredura_integral`.** O novo método lê apenas o início de cada CSV ou, em UTF-16, a primeira linha, sem ler os 106 GiB. Verifique as seções **3–5** e preencha os campos confirmados na seção **8**. Com o resultado dessas verificações, será possível elaborar o script definitivo de seleção, cruzamento e consolidação, com segurança para a interpretação dos códigos e da referência temporal.
+
+**Privacidade:** mantenha o HTML, os arquivos `.duckdb` e os Parquets derivados em armazenamento controlado. Compartilhe, se necessário, apenas nomes de colunas, descrições dos códigos e estatísticas agregadas, nunca NB, CPF ou valores individualizados.
+
+
+#14. Teste colunas
+```{r}
+# Identificar nomes de colunas repetidos em cada CSV
+
+colunas_duplicadas <- esquemas[
+  !is.na(coluna),
+  .(n_ocorrencias = .N,
+    posicoes = paste(posicao, collapse = ", ")),
+  by = .(arquivo, coluna)
+][n_ocorrencias > 1]
+
+knitr::kable(
+  colunas_duplicadas,
+  format = "html"
+)
+
+# Mapeamento inicial das variáveis de Mantidos
+
+mapeamento <- list(
+  nb = "NB",
+  situacao_codigo = "Situação do Benefício (Código)",
+  situacao_nome = "Situação Benefício (Nome)",
+  grupo_situacao = "Grupo Situação (Nome)",
+  motivo_cessacao_codigo = "Motivo Cessação/Suspensão (Código)",
+  motivo_cessacao_nome = "Motivo Cessação/Suspensão (Nome)",
+  data_cessacao = "DCB - Data da Cessação do Benefício",
+  competencia_cessacao = "Competência DCB",
+  ultima_macica = "Compet. Última Maciça (Código)",
+  data_inicio = "DIB - Data do Início do Benefício",
+  duracao_dias = "Qt duração benefício (em dias)"
+)
+
+
+
+
+```
+

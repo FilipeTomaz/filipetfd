@@ -1,0 +1,15 @@
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*.duckdb
+*.duckdb.wal
+*.wal
+*.knit.md
+*.utf8.md
+*_files/
+dados/*
+!dados/README.md
+saidas/*
+!saidas/README.md
+referencia/relatorios/

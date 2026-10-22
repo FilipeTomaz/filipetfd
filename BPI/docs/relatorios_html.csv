@@ -1,0 +1,7 @@
+arquivo,tabelas_html_lidas,nota
+00.1_piloto_mantidos_primeiros_100_jul2026.html,16,1900 linhas iniciais; não é amostra aleatória nem confirma posição em julho/2026
+00_inventario_mantidos.html,8,19 arquivos e 51 posições; integração por NB ainda proposta
+03_exploracao_beneficios.html,7,"Exploração por espécie, clientela, datas e idade; contagem por benefício"
+05.1_especies_clientela_renda_tempo.html,22,Amplia análises com contribuição e comparação entre pensão e BPC
+05_especies_clientela_renda_tempo.html,10,"Espécie/clientela, renda e tempo potencial até 2025"
+dicionario_banco_beneficio_cad_rais.html,3,60 colunas confirmadas; contém prévia individual além de metadados

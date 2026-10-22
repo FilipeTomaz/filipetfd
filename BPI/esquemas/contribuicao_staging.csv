@@ -1,0 +1,6 @@
+variavel,tipo_duckdb,papel
+nb,VARCHAR,Chave de benefício antes da deduplicação
+cpf,VARCHAR,CPF normalizado
+qt_anos_contribuicao,DOUBLE,Anos informados
+arquivo,VARCHAR,"Proveniência; usada na deduplicação, não persistida na tabela final"
+ano_arquivo,INTEGER,"Ano do arquivo; usado na deduplicação, não persistido na tabela final"

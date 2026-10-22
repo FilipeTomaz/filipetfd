@@ -1,0 +1,153 @@
+---
+title: "Concedidos — Espécie 41, clientela rural"
+subtitle: "Extração integral filtrada e análise de contribuição, despacho e filiação"
+output:
+  html_document:
+    theme: darkly
+    toc: true
+    toc_depth: 3
+    df_print: paged
+params:
+  diretorio: "E:/01_Bases/09_PREVIDENCIA/04_Dados/Concedidos"
+  saida: "E:/01_Bases/09_PREVIDENCIA/04_Dados/Saidas"
+  padrao_arquivos: "concedidos_2026"
+  executar_extracao: true
+  exportar_parquet: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, warning=TRUE, message=FALSE)
+library(DBI)
+library(duckdb)
+library(data.table)
+library(knitr)
+mostrar <- function(x) print(knitr::kable(x, format="html", row.names=FALSE))
+```
+
+## 1. Escopo e cuidados
+
+Esta rotina processa **todos os registros** dos arquivos selecionados, mas somente quando `executar_extracao: true`. Por padrão, seleciona arquivos cujo nome contenha `concedidos_2026`; para incluir todos os anos, altere `padrao_arquivos` para `"concedidos"`. O filtro é **espécie 41** e **clientela rural**. Anos de contribuição, despacho e filiação permanecem como dimensões analíticas, sem exclusão de categorias. A exportação contém NB e, portanto, deve ser armazenada em ambiente seguro. Nenhum NB é exibido no relatório.
+
+## 2. Inventário dos arquivos
+
+```{r inventario}
+arquivos <- list.files(params$diretorio, pattern="\\.csv$", recursive=TRUE, full.names=TRUE, ignore.case=TRUE)
+arquivos <- arquivos[grepl(params$padrao_arquivos, basename(arquivos), ignore.case=TRUE)]
+if (!length(arquivos)) stop("Nenhum CSV encontrado para o padrão informado.")
+inventario <- data.table(arquivo=basename(arquivos), tamanho_GiB=round(file.size(arquivos)/1024^3,3))
+mostrar(inventario)
+```
+
+## 3. Inspeção rápida do cabeçalho
+
+```{r cabecalho}
+ler_cabecalho <- function(arq) {
+  con <- file(arq, open="rt", encoding="latin1")
+  on.exit(close(con), add=TRUE)
+  linha <- readLines(con, n=1L, warn=FALSE)
+  if (!length(linha)) stop("CSV sem cabeçalho")
+  linha <- sub("^\\ufeff", "", linha)
+  seps <- c(",", ";", "\t")
+  candidatos <- lapply(seps, function(s) {
+    tryCatch(names(read.table(text=linha, sep=s, header=TRUE, nrows=0,
+                              quote='"', comment.char="", check.names=FALSE)),
+             error=function(e) character())
+  })
+  k <- which.max(lengths(candidatos))
+  list(colunas=candidatos[[k]], sep=seps[k])
+}
+info <- ler_cabecalho(arquivos[1])
+if (length(info$colunas) < 39L) stop("Menos de 39 colunas; verificar delimitador/cabeçalho.")
+mostrar(data.table(posicao=c(3,4,5,6,7,13,14,28,39),
+                  campo=info$colunas[c(3,4,5,6,7,13,14,28,39)]))
+if (length(arquivos)>1L) {
+  estruturas <- lapply(arquivos, function(a) tryCatch(ler_cabecalho(a), error=function(e) NULL))
+  consistente <- vapply(estruturas, function(x) !is.null(x) && length(x$colunas)==length(info$colunas) && identical(x$sep,info$sep) && identical(x$colunas,info$colunas), logical(1))
+  mostrar(data.table(arquivos=length(arquivos), estruturas_iguais=sum(consistente), divergentes=sum(!consistente)))
+  if (!all(consistente)) stop("Há CSVs com estruturas diferentes. Corrigir antes de extrair por posição.")
+}
+```
+
+## 4. Preparar DuckDB e consulta
+
+```{r consulta}
+dir.create(params$saida, recursive=TRUE, showWarnings=FALSE)
+con <- dbConnect(duckdb::duckdb())
+on.exit <- NULL
+DBI::dbExecute(con, "SET preserve_insertion_order=false")
+tmp <- file.path(params$saida, "duckdb_tmp_concedidos_41")
+dir.create(tmp, recursive=TRUE, showWarnings=FALSE)
+DBI::dbExecute(con, paste0("SET temp_directory=", as.character(dbQuoteString(con, gsub("\\\\", "/", tmp)))))
+q <- function(x) as.character(dbQuoteString(con, gsub("\\\\", "/", x)))
+lista <- paste(vapply(arquivos, q, character(1)), collapse=", ")
+sep_sql <- if (info$sep=="\t") "\\t" else info$sep
+# Colunas referenciadas por nomes reais; evita erros de acentuação na construção da consulta.
+campo <- function(pos) as.character(dbQuoteIdentifier(con, info$colunas[pos]))
+col <- function(pos) paste0("trim(cast(", campo(pos), " AS VARCHAR))")
+so_digitos <- function(pos) paste0("regexp_replace(",col(pos),", '[^0-9]', '', 'g')")
+origem <- sprintf("read_csv([%s], delim=%s, header=true, all_varchar=true, encoding='latin-1', union_by_name=false, strict_mode=false, null_padding=true)", lista, q(sep_sql))
+# A descrição da clientela é usada para evitar supor o código rural.
+# Valores não rurais e valores não identificados ficam fora da extração.
+base_sql <- sprintf("WITH fonte AS (
+ SELECT %s AS nb, %s AS especie_codigo, %s AS clientela_codigo,
+        %s AS clientela_nome, %s AS despacho_codigo, %s AS despacho_nome,
+        %s AS filiacao_codigo, %s AS filiacao_nome,
+        %s AS anos_contribuicao_texto
+ FROM %s
+)
+SELECT * FROM fonte
+WHERE TRY_CAST(especie_codigo AS INTEGER)=41
+  AND lower(trim(clientela_nome)) LIKE '%%rural%%'",
+  col(39),col(7),col(3),col(4),col(5),col(6),col(13),col(14),col(28),origem)
+cat("Consulta preparada. Nenhum registro integral foi lido neste chunk.\n")
+```
+
+## 5. Executar extração integral e sumarizar
+
+```{r extracao}
+if (!isTRUE(params$executar_extracao)) {
+  cat("**Extração integral desativada.** Para executar, altere `executar_extracao` para `true` no YAML e rode Knit.\n")
+} else {
+  inicio <- Sys.time()
+  dbExecute(con, paste0("CREATE TEMP TABLE rural_41 AS ", base_sql))
+  cat("Tempo de extração (min): ", round(as.numeric(difftime(Sys.time(), inicio, units="mins")),2),"\n")
+  resumo <- dbGetQuery(con, "SELECT count(*) AS n_registros, count(DISTINCT nb) AS n_nb_distintos, sum(CASE WHEN nb IS NULL OR nb='' THEN 1 ELSE 0 END) AS nb_ausente FROM rural_41")
+  mostrar(resumo)
+  if (resumo$n_registros != resumo$n_nb_distintos) {
+    cat("**ATENÇÃO:** existem NBs repetidos ou ausentes; verificar antes de fazer JOIN com a base integrada.\n")
+  }
+}
+```
+
+## 6. Distribuições de despacho, filiação e contribuição
+
+```{r distribuicoes}
+if (isTRUE(params$executar_extracao)) {
+  for (dimensao in c("despacho_codigo, despacho_nome", "filiacao_codigo, filiacao_nome", "anos_contribuicao_texto")) {
+    cat("### ", dimensao, "\n\n")
+    sql <- sprintf("SELECT %s, count(*) AS n_beneficios FROM rural_41 GROUP BY %s ORDER BY n_beneficios DESC", dimensao, dimensao)
+    mostrar(as.data.table(dbGetQuery(con, sql)))
+    cat("\n")
+  }
+  cruzamento <- dbGetQuery(con, "SELECT despacho_codigo, despacho_nome, filiacao_codigo, filiacao_nome, anos_contribuicao_texto, count(*) AS n_beneficios FROM rural_41 GROUP BY ALL ORDER BY n_beneficios DESC")
+  cat("### Cruzamento das três dimensões\n\n")
+  mostrar(as.data.table(cruzamento))
+}
+```
+
+## 7. Exportar Parquet filtrado
+
+```{r exportacao}
+if (isTRUE(params$executar_extracao) && isTRUE(params$exportar_parquet)) {
+  destino <- file.path(params$saida, "concedidos_2026_especie41_rural_contribuicao.parquet")
+  if (file.exists(destino)) stop("Arquivo de saída já existe; renomeie ou remova manualmente antes de exportar: ", destino)
+  dbExecute(con, paste0("COPY (SELECT * FROM rural_41) TO ", q(destino), " (FORMAT PARQUET, COMPRESSION ZSTD)"))
+  cat("Parquet criado em: ", destino, "\n")
+}
+```
+
+## 8. Encerrar conexão
+
+```{r encerrar}
+dbDisconnect(con, shutdown=TRUE)
+```

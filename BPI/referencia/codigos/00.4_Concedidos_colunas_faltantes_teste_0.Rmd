@@ -1,0 +1,277 @@
+---
+title: "Concedidos 2026 | Leitura leve e diagnóstico de contribuições"
+subtitle: "Piloto de um único arquivo, com 100 registros"
+date: "`r format(Sys.Date(), '%d/%m/%Y')`"
+output:
+  html_document:
+    theme: darkly
+    highlight: tango
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    code_folding: show
+params:
+  dir_concedidos: "E:/01_Bases/09_PREVIDENCIA/04_Dados/Concedidos"
+  arquivo_preferido: ""
+  n_amostra: 100
+---
+
+> **Objetivo:** ler apenas **um arquivo de Concedidos 2026** e **100 registros** para identificar a estrutura original e localizar variáveis relacionadas a contribuição, carência e recolhimentos. **Não percorre todos os CSVs, não lê a base completa, não realiza cruzamentos e não altera o DuckDB ou os Parquets existentes.**
+
+> **Sigilo:** este relatório apresenta nomes de colunas e estatísticas agregadas. Não imprime CPF, NB nem linhas individuais.
+
+# 1. Preparação
+
+```{r preparacao, echo=TRUE, message=FALSE, warning=FALSE}
+if (!requireNamespace("data.table", quietly = TRUE)) {
+  stop("Instale o pacote data.table: install.packages('data.table')")
+}
+if (!requireNamespace("knitr", quietly = TRUE)) {
+  stop("Instale o pacote knitr: install.packages('knitr')")
+}
+
+library(data.table)
+library(knitr)
+
+pasta <- params$dir_concedidos
+n_amostra <- as.integer(params$n_amostra)
+
+if (!dir.exists(pasta)) stop("Pasta de Concedidos não encontrada: ", pasta)
+if (is.na(n_amostra) || n_amostra < 1L) stop("n_amostra deve ser >= 1")
+
+mostrar_tabela <- function(x) {
+  if (!nrow(x)) {
+    cat("*Nenhum campo encontrado nesta categoria.*\n\n")
+  } else {
+    print(knitr::kable(x, format = "html", row.names = FALSE))
+    cat("\n\n")
+  }
+}
+
+normalizar_nome <- function(x) {
+  x <- iconv(as.character(x), to = "ASCII//TRANSLIT", sub = "")
+  x[is.na(x)] <- ""
+  tolower(x)
+}
+```
+
+# 2. Selecionar um único arquivo `concedidos_2026`
+
+A rotina localiza arquivos CSV ou Parquet na pasta, mas **escolhe somente um**. Se houver mais de um resultado, mostra a lista de candidatos e escolhe preferencialmente um CSV. Para definir manualmente o arquivo, preencha `arquivo_preferido` nos parâmetros do cabeçalho YAML com seu **caminho completo**.
+
+```{r localizar_arquivo, echo=TRUE, results='asis'}
+arquivo_preferido <- trimws(params$arquivo_preferido)
+
+if (nzchar(arquivo_preferido)) {
+  if (!file.exists(arquivo_preferido)) {
+    stop("Arquivo indicado em arquivo_preferido não encontrado: ", arquivo_preferido)
+  }
+  candidatos <- normalizePath(arquivo_preferido, winslash = "/")
+} else {
+  arquivos <- list.files(
+    pasta,
+    pattern = "\\.(csv|parquet)$",
+    recursive = TRUE,
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+
+  candidatos <- arquivos[grepl(
+    "concedid.*2026", basename(arquivos), ignore.case = TRUE
+  )]
+
+  if (!length(candidatos)) {
+    stop(paste0(
+      "Nenhum CSV/Parquet com 'concedidos' e '2026' no nome foi encontrado. ",
+      "Confira os nomes em: ", pasta,
+      ". Se necessário, informe o caminho completo no parâmetro arquivo_preferido."
+    ))
+  }
+
+  # Priorizar CSV, depois ordem alfabética.
+  candidatos <- candidatos[order(
+    tolower(tools::file_ext(candidatos)) != "csv",
+    basename(candidatos)
+  )]
+}
+
+arquivo_selecionado <- candidatos[1L]
+formato <- tolower(tools::file_ext(arquivo_selecionado))
+
+if (!(formato %in% c("csv", "parquet"))) {
+  stop("Formato não suportado neste piloto: ", formato)
+}
+
+cat("**Arquivo selecionado:** `", basename(arquivo_selecionado), "`\n\n", sep = "")
+cat("**Caminho:** `", arquivo_selecionado, "`\n\n", sep = "")
+cat("**Tamanho:** ", round(file.size(arquivo_selecionado) / 1024^3, 3), " GiB\n\n", sep = "")
+cat("**Amostra solicitada:** ", n_amostra, " primeiras linhas\n\n", sep = "")
+
+if (length(candidatos) > 1L) {
+  cat("### Outros arquivos de 2026 encontrados (não serão lidos)\n\n")
+  mostrar_tabela(data.table(arquivo = basename(candidatos)))
+}
+```
+
+# 3. Ler o cabeçalho e apenas 100 registros
+
+Para CSV, a detecção do delimitador ocorre **somente na primeira linha**, sem abrir o arquivo três vezes. A leitura dos registros usa `nrows` e mantém as colunas como texto, preservando zeros à esquerda de identificadores. Para Parquet, a consulta emprega `LIMIT`.
+
+```{r leitura_piloto, echo=TRUE, results='asis', message=FALSE, warning=FALSE}
+if (formato == "csv") {
+  # Primeira abertura: somente uma linha para identificar o separador.
+  con_cab <- file(arquivo_selecionado, open = "rt", encoding = "CP1252")
+  cabecalho <- tryCatch(
+    readLines(con_cab, n = 1L, warn = FALSE),
+    finally = close(con_cab)
+  )
+  if (!length(cabecalho)) stop("CSV vazio ou sem cabeçalho")
+  cabecalho <- sub("^\\ufeff", "", cabecalho)
+
+  separadores <- c(",", ";", "\t")
+  nomes_por_separador <- lapply(separadores, function(sep) {
+    tryCatch(
+      names(utils::read.table(
+        text = cabecalho,
+        header = TRUE,
+        sep = sep,
+        nrows = 0,
+        quote = '"',
+        comment.char = "",
+        check.names = FALSE
+      )),
+      error = function(e) character()
+    )
+  })
+  melhor <- which.max(lengths(nomes_por_separador))
+  sep_csv <- separadores[melhor]
+  if (length(nomes_por_separador[[melhor]]) < 2L) {
+    stop("Cabeçalho não interpretado: confira o separador do CSV.")
+  }
+
+  # Segunda abertura: apenas as primeiras n_amostra linhas de dados.
+  amostra_concedidos <- utils::read.csv(
+    file = arquivo_selecionado,
+    sep = sep_csv,
+    fileEncoding = "CP1252",
+    nrows = n_amostra,
+    colClasses = "character",
+    check.names = FALSE,
+    comment.char = "",
+    stringsAsFactors = FALSE
+  )
+  setDT(amostra_concedidos)
+
+  separador_informado <- if (sep_csv == "\t") "TAB" else sep_csv
+} else {
+  if (!requireNamespace("duckdb", quietly = TRUE) ||
+      !requireNamespace("DBI", quietly = TRUE)) {
+    stop("Para Parquet, instale duckdb e DBI: install.packages(c('duckdb', 'DBI'))")
+  }
+  con_parquet <- DBI::dbConnect(duckdb::duckdb())
+  amostra_concedidos <- tryCatch({
+    caminho_sql <- as.character(DBI::dbQuoteString(con_parquet, arquivo_selecionado))
+    consulta <- sprintf(
+      "SELECT * FROM read_parquet(%s) LIMIT %d",
+      caminho_sql, n_amostra
+    )
+    as.data.table(DBI::dbGetQuery(con_parquet, consulta))
+  }, finally = DBI::dbDisconnect(con_parquet, shutdown = TRUE))
+  separador_informado <- NA_character_
+}
+
+n_lidas <- nrow(amostra_concedidos)
+n_campos <- ncol(amostra_concedidos)
+
+mostrar_tabela(data.table(
+  arquivo = basename(arquivo_selecionado),
+  formato = toupper(formato),
+  separador = separador_informado,
+  linhas_lidas = n_lidas,
+  colunas = n_campos
+))
+```
+
+# 4. Dicionário de colunas e posições
+
+Esta tabela lista todos os campos do **arquivo selecionado**, sem exibir seus valores.
+
+```{r dicionario, echo=TRUE, results='asis'}
+colunas_originais <- data.table(
+  arquivo = basename(arquivo_selecionado),
+  posicao_no_arquivo = seq_along(names(amostra_concedidos)),
+  campo_original = names(amostra_concedidos)
+)
+colunas_originais[, campo_normalizado := normalizar_nome(campo_original)]
+mostrar_tabela(colunas_originais[, .(posicao_no_arquivo, campo_original)])
+```
+
+# 5. Localizar campos de contribuição, carência e recolhimentos
+
+A seleção é feita **pelos nomes das colunas**, e não pelos registros. Pode haver campos relevantes com nomenclatura distinta; por isso o dicionário completo permanece disponível na seção anterior.
+
+```{r contribuicoes, echo=TRUE, results='asis'}
+padrao_contrib <- paste(
+  "contrib", "carencia", "recolh", "tempo.*serv",
+  "tempo.*contrib", "salario.*contrib", "numero.*parcel",
+  sep = "|"
+)
+
+campos_contribuicao <- colunas_originais[
+  grepl(padrao_contrib, campo_normalizado),
+  .(posicao_no_arquivo, campo_original)
+]
+
+mostrar_tabela(campos_contribuicao)
+
+if (nrow(campos_contribuicao) == 0L) {
+  cat("**Atenção:** nenhum campo com esses termos apareceu no arquivo selecionado. ",
+      "Consulte o dicionário da seção 4 e, depois, outros arquivos se necessário.\n\n", sep = "")
+}
+```
+
+# 6. Conferir preenchimento na pequena amostra
+
+A tabela abaixo mostra **somente contagens agregadas** das variáveis candidatas. Não expõe o conteúdo das observações.
+
+```{r preenchimento, echo=TRUE, results='asis'}
+if (nrow(campos_contribuicao)) {
+  resumo_preenchimento <- rbindlist(lapply(
+    seq_len(nrow(campos_contribuicao)),
+    function(i) {
+      pos <- campos_contribuicao$posicao_no_arquivo[i]
+      x <- trimws(as.character(amostra_concedidos[[pos]]))
+      preenchido <- !is.na(x) & nzchar(x) & !(toupper(x) %in% c("NA", "NULL"))
+      data.table(
+        posicao_no_arquivo = pos,
+        campo_original = campos_contribuicao$campo_original[i],
+        n_amostra = length(x),
+        n_preenchidos = sum(preenchido),
+        n_ausentes = sum(!preenchido)
+      )
+    }
+  ))
+  mostrar_tabela(resumo_preenchimento)
+} else {
+  cat("*Sem campos candidatos para calcular preenchimento.*\n\n")
+}
+```
+
+# 7. Identificadores para futura integração
+
+Localizar o campo **NB** e o campo **espécie** é o próximo passo para planejar uma extração por chave, **sem executar qualquer cruzamento agora**.
+
+```{r chaves, echo=TRUE, results='asis'}
+padrao_chave <- "^nb$|numero.*benef|numer.*benef|^nu_?benef|especie|^esp$"
+campos_chave <- colunas_originais[
+  grepl(padrao_chave, campo_normalizado),
+  .(posicao_no_arquivo, campo_original)
+]
+mostrar_tabela(campos_chave)
+```
+
+# 8. Encaminhamento
+
+A leitura acima usa **somente as primeiras linhas de um arquivo de 2026**. A presença ou ausência de campos nesse arquivo **não garante** que o esquema seja igual nos outros anos. Também não permite inferências populacionais.
+
+**Próxima etapa, após conferir as tabelas:** decidir quais campos precisam ser recuperados, verificar sua definição (especialmente na espécie 21, distinguindo pensionista de instituidor) e, só então, planejar uma extração enxuta por NB para integrar ao DuckDB existente.

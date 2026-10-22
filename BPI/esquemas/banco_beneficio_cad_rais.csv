@@ -1,0 +1,99 @@
+ordem,variavel,tipo_duckdb,origem,campo_fonte,descricao,regra_ou_observacao,identificador_direto,evidencia
+1,nb,VARCHAR,INSS Concedidos,NB,Número do benefício; chave única da base final,Chave única: uma linha por NB,sim,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+2,clientela_codigo,VARCHAR,INSS Concedidos,Clientela (Código),Código da clientela previdenciária,NA,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+3,clientela,VARCHAR,INSS Concedidos,Clientela (Nome),Descrição da clientela previdenciária,NA,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+4,nb_anterior,VARCHAR,INSS Concedidos,NB Anterior,Número do benefício anterior,NA,sim,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+5,especie,INTEGER,INSS Concedidos,Espécie (Código),Código da espécie do benefício,"Espécies 21, 41 e 88; espécie numérica extraída do
+campo de código",nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+6,especie_nome,VARCHAR,INSS Concedidos,Espécie (Nome),Descrição da espécie do benefício,"Espécies 21, 41 e 88; espécie numérica extraída do
+campo de código",nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+7,cid,VARCHAR,INSS Concedidos,CID 10 (Código),"Código CID informado na concessão, quando
+aplicável",Pode estar ausente nas espécies selecionadas,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+8,despacho_codigo,VARCHAR,INSS Concedidos,Despacho (Código),Código do despacho,NA,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+9,despacho,VARCHAR,INSS Concedidos,Despacho (Nome),Descrição do despacho,NA,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+10,sexo_codigo,VARCHAR,INSS Concedidos,Sexo Titular (Código),Código do sexo do titular,NA,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+11,sexo,VARCHAR,INSS Concedidos,Sexo Titular (Nome),Descrição do sexo do titular,NA,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+12,vl_juros_atrasados,DOUBLE,INSS Concedidos,Vl Juros Atrasados,Valor de juros atrasados,Conversão de separador decimal,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+13,vl_correcao_monetaria,DOUBLE,INSS Concedidos,Vl Correção Monetária,Valor de correção monetária,Conversão de separador decimal,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+14,vl_rmi,DOUBLE,INSS Concedidos,Vl RMI - Renda Mensal Inicial,Renda mensal inicial (RMI) nominal,RMI nominal na concessão,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+15,vl_rmi_convertido,DOUBLE,INSS Concedidos,Vl RMI Convertido,"RMI convertida conforme regra da fonte; comparar anos
+exige cautela","Documentação alerta para falta de comparabilidade
+direta entre anos",nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+16,rmi_em_sm,DOUBLE,INSS Concedidos,Quantidade Salários Mínimos - RMI,"RMI expressa em salários mínimos, quando
+disponível",RMI em múltiplos do salário mínimo,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+17,dt_ddb,DATE,INSS Concedidos,DDB - Data Despacho Benefício,Data do despacho do benefício (DDB),Datas padronizadas como DATE,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+18,dt_dib,DATE,INSS Concedidos,DIB - Data Início Benefício,Data de início do benefício (DIB),Datas padronizadas como DATE,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+19,dt_der,DATE,INSS Concedidos,DER - Data Entrada Requerimento,Data de entrada do requerimento (DER),Datas padronizadas como DATE,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+20,dt_dii,DATE,INSS Concedidos,DII - Data Início Incapacidade,"Data de início da incapacidade (DII), quando
+aplicável",Datas padronizadas como DATE,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+21,dt_nascimento,DATE,INSS Concedidos,Data Nascimento Titular,Data de nascimento do titular,Datas padronizadas como DATE,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+22,uf,VARCHAR,INSS Concedidos,Município Resid Titular (Código),"UF de residência derivada do código municipal
+previdenciário","UF de residência derivada dos dois primeiros dígitos do
+código SUIBE",nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+23,uf_processadora,VARCHAR,INSS Concedidos,UF (Nome),"UF processadora da concessão; não equivale
+necessariamente à residência",Unidade processadora; não equivale à residência,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+24,municipio_codigo,VARCHAR,INSS Concedidos,Município Resid Titular (Código),"Código de município de residência na codificação da
+fonte previdenciária",NA,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+25,municipio,VARCHAR,INSS Concedidos,Município Resid Titular (Nome),Nome do município de residência,NA,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+26,cpf,VARCHAR,INSS Concedidos,CPF Titular,"CPF do titular normalizado para 11 dígitos;
+identificador sensível","Normalização para 11 dígitos; não equivale a validação
+de dígitos verificadores",sim,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+27,localizado_cadunico,VARCHAR,CadÚnico,Derivada do cruzamento por CPF,"S se o CPF foi localizado na fotografia do CadÚnico
+utilizada; N caso contrário","S se localizado no CadÚnico de junho/2024; N caso
+contrário",nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+28,uf_cad,VARCHAR,CadÚnico,cd_ibge_cadastro,UF do cadastro no CadÚnico,"UF derivada dos dois primeiros dígitos do código
+IBGE",nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+29,municipio_cad_ibge,VARCHAR,CadÚnico,cd_ibge_cadastro,Código IBGE do município cadastral,Código municipal IBGE de sete dígitos,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+30,cod_local_domici_fam,INTEGER,CadÚnico,co_local_domic_fam,Código da localização do domicílio familiar,"1 = urbano; 2 = rural (conferir dicionário da
+fonte)",nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+31,cod_deficiencia_memb,DOUBLE,CadÚnico,co_deficiencia_memb,Código de deficiência do membro,NA,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+32,ind_def_cegueira_memb,DOUBLE,CadÚnico,in_def_cegueira_memb,Indicador de cegueira,"Indicador de deficiência; conferir domínio dos códigos
+no CadÚnico tratado",nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+33,ind_def_baixa_visao_memb,DOUBLE,CadÚnico,in_def_baixa_visao_memb,Indicador de baixa visão,"Indicador de deficiência; conferir domínio dos códigos
+no CadÚnico tratado",nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+34,ind_def_surdez_profunda_memb,DOUBLE,CadÚnico,in_def_surdez_profunda_memb,Indicador de surdez profunda,"Indicador de deficiência; conferir domínio dos códigos
+no CadÚnico tratado",nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+35,ind_def_surdez_leve_memb,DOUBLE,CadÚnico,in_def_surdez_leve_memb,Indicador de surdez leve,"Indicador de deficiência; conferir domínio dos códigos
+no CadÚnico tratado",nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+36,ind_def_fisica_memb,DOUBLE,CadÚnico,in_def_fisica_memb,Indicador de deficiência física,"Indicador de deficiência; conferir domínio dos códigos
+no CadÚnico tratado",nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+37,ind_def_mental_memb,DOUBLE,CadÚnico,in_def_mental_memb,Indicador de deficiência mental,"Indicador de deficiência; conferir domínio dos códigos
+no CadÚnico tratado",nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+38,ind_def_sindrome_down_memb,DOUBLE,CadÚnico,in_def_sindrome_down_memb,Indicador de síndrome de Down,"Indicador de deficiência; conferir domínio dos códigos
+no CadÚnico tratado",nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+39,ind_def_transtorno_mental_memb,DOUBLE,CadÚnico,in_def_transtorno_mental_memb,Indicador de transtorno mental,"Indicador de deficiência; conferir domínio dos códigos
+no CadÚnico tratado",nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+40,cod_curso_frequentou_pessoa_memb,DOUBLE,CadÚnico,co_curso_freq_pessoa_memb,Código de curso frequentado pelo membro,NA,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+41,cod_trabalho_12_meses_memb,DOUBLE,CadÚnico,co_trabalho_12_meses_memb,Código de trabalho nos últimos 12 meses,NA,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+42,qtd_meses_12_meses_memb,DOUBLE,CadÚnico,qt_meses_12_meses_memb,"Quantidade de meses trabalhados nos últimos 12
+meses",NA,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+43,val_renda_bruta_12_meses_memb,DOUBLE,CadÚnico,fx_renda_individual_808,"Campo 808 do CadÚnico tratado; documentação da rodada o
+classifica como faixa de renda","Campo documentado como faixa de renda, não valor
+monetário em reais",nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+44,localizado_rais,VARCHAR,RAIS 2024,Derivada do cruzamento por CPF,"S se o CPF foi localizado na RAIS 2024; N caso
+contrário","S se CPF localizado em ao menos um vínculo da RAIS
+2024",nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+45,vinculo_ativo_3112,INTEGER,RAIS 2024,vinculo_ativo_31_12,Situação do vínculo principal em 31/12/2024,1 = vínculo selecionado ativo em 31/12/2024,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+46,tipo_vinculo,VARCHAR,RAIS 2024,tipo_vinculo,Código do tipo de vínculo selecionado,NA,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+47,tipo_admissao,VARCHAR,RAIS 2024,tipo_admissao,Código do tipo de admissão do vínculo,NA,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+48,mes_admissao,BIGINT,RAIS 2024,data_admissao,Mês extraído da data de admissão,Mês extraído da data de admissão,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+49,faixa_tempo_emprego,VARCHAR,RAIS 2024,tempo_emprego,Faixa do tempo de emprego do vínculo selecionado,"Faixas: <3; 3–5,9; 6–11,9; 12–23,9; 24–35,9;
+36–59,9; 60–119,9; 120+ meses",nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+50,tempo_emprego,DOUBLE,RAIS 2024,tempo_emprego,Tempo de emprego em meses,Tempo de emprego em meses,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+51,faixa_remuneracao_media_sm,VARCHAR,RAIS 2024,vl_remun_media_sm,Faixa da remuneração média em salários mínimos,"Faixas em SM: até 0,5; 0,51–1; 1,01–1,5; 1,51–2;
+2,01–3; 3,01–4; 4,01–5; 5,01–7; 7,01–10; 10,01–15; 15,01–20; >20",nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+52,remuneracao_media_sm,DOUBLE,RAIS 2024,vl_remun_media_sm,Remuneração média em salários mínimos,Remuneração média em salários mínimos,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+53,valor_remuneracao_media,DOUBLE,RAIS 2024,vl_remun_media_nom,Remuneração média nominal do vínculo,Remuneração média nominal em reais,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+54,cbo_1994,VARCHAR,RAIS 2024,cbo_94,Código de ocupação CBO 1994,NA,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+55,cbo_2002,VARCHAR,RAIS 2024,cbo_2002,Código de ocupação CBO 2002,NA,nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+56,cnae_1,VARCHAR,RAIS 2024,cnae_95_classe,Classe de atividade CNAE 95,CNAE 1995 (classe),nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+57,cnae_2,VARCHAR,RAIS 2024,cnae_20_classe,Classe de atividade CNAE 2.0,CNAE 2.0 (classe),nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+58,vl_renda_media_fam,DOUBLE,CadÚnico família (acréscimo posterior),Parquet tratado da família (campo a confirmar),"Renda familiar mensal per capita; definição e regra de
+cálculo a verificar no código adicional","Renda familiar per capita em reais; acrescentada em
+09/10/2026; verificar regra de cálculo",nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+59,vl_renda_total_fam,DOUBLE,CadÚnico família (acréscimo posterior),Parquet tratado da família (campo a confirmar),"Renda familiar total; período e composição a verificar
+no código adicional","Renda familiar total; acrescentada em 09/10/2026;
+verificar composição",nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"
+60,qt_membro_familia,INTEGER,CadÚnico família (acréscimo posterior),Parquet tratado da família (campo a confirmar),"Quantidade de membros da família; critério de contagem
+a verificar no código adicional","Quantidade de membros; acrescentada em 09/10/2026;
+verificar definição",nao,"HTML dicionario_banco_beneficio_cad_rais.html, tabela do dicionário, 15/10/2026"

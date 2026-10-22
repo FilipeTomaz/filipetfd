@@ -1,0 +1,760 @@
+---
+title: "Concedidos | Extração de NB, CPF e contribuição (v3 corrigida)"
+subtitle: "Todos os CSVs — DuckDB auxiliar para integração posterior"
+output:
+  html_document:
+    theme: darkly
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    df_print: kable
+params:
+  dir_concedidos: "E:/01_Bases/09_PREVIDENCIA/04_Dados/Concedidos"
+  dir_saida: "E:/01_Bases/09_PREVIDENCIA/04_Dados/Saidas"
+  nome_duckdb: "concedidos_nb_cpf_contribuicao.duckdb"
+  executar_extracao: true
+  padrao_csv: "\\.csv$"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = TRUE)
+library(DBI)
+library(duckdb)
+library(data.table)
+library(knitr)
+mostrar <- function(x) {
+  print(knitr::kable(as.data.frame(x), format = "html", row.names = FALSE))
+}
+```
+
+# Objetivo e segurança
+
+Extrair **todos os registros** de **todos os CSVs de Concedidos**, sem filtrar espécie ou clientela, usando exclusivamente as colunas originais nas posições **39 (NB)**, **38 (CPF Titular)** e **28 (Qt Anos Contribuição)**. O resultado final será a tabela `tb_contribuicao_nb` em um **DuckDB auxiliar**, com as colunas `nb`, `cpf` e `qt_anos_contribuicao`.
+
+O processo **não altera** o banco integrado `banco_beneficio_cad_rais.duckdb` nem seu Parquet. O relatório HTML contém **apenas estatísticas agregadas**; o DuckDB gerado contém identificadores pessoais e deve ser armazenado em local protegido.
+
+**Importante:** as posições foram verificadas previamente nos 11 arquivos de 2016 a 2026. Durante a extração, o DuckDB confere o total de **54 colunas** de cada CSV e seleciona os campos pelas posições previamente verificadas, sem comparar os nomes acentuados (que podem apresentar problemas de codificação). A quantidade de anos de contribuição não equivale necessariamente ao número de recolhimentos; sua interpretação para a espécie 21 requer validação específica.
+
+# 1. Inventário dos arquivos
+
+```{r inventario}
+stopifnot(dir.exists(params$dir_concedidos))
+arquivos <- list.files(
+  params$dir_concedidos,
+  pattern = params$padrao_csv,
+  recursive = TRUE,
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+arquivos <- sort(normalizePath(arquivos, winslash = "/", mustWork = TRUE))
+if (!length(arquivos)) stop("Nenhum arquivo CSV encontrado no diretório.")
+inventario <- data.table(
+  arquivo = basename(arquivos),
+  tamanho_gib = round(file.size(arquivos) / 1024^3, 3)
+)
+cat("Arquivos CSV encontrados:", length(arquivos), "\n\n")
+mostrar(inventario)
+```
+
+# 2. Esquema confirmado dos arquivos
+
+A validação anterior confirmou **11 arquivos (2016–2026)**, todos com **54 colunas**, e as mesmas posições: anos de contribuição = **28**, CPF = **38**, NB = **39**. Não há necessidade de reler os cabeçalhos com uma função personalizada. Durante a extração, o DuckDB verifica o esquema de cada arquivo antes de inserir os dados.
+
+```{r esquema_confirmado}
+mostrar(data.table(
+  variavel = c("qt_anos_contribuicao", "cpf", "nb"),
+  posicao_csv = c(28L, 38L, 39L)
+))
+```
+
+# 3. Configuração da execução
+
+O parâmetro `executar_extracao` está definido como **`true`** no cabeçalho: ao clicar em **Knit**, o documento processará os CSVs. Para executar apenas o inventário, altere para `false`.
+
+**Reexecução:** as tabelas `tb_staging`, `tb_log` e `tb_contribuicao_nb` do DuckDB auxiliar serão **sobrescritas**. A extração recomeça no primeiro CSV; se desejar preservar os resultados anteriores, faça uma cópia do DuckDB auxiliar antes de executar. O banco integrado de 60 colunas não é alterado.
+
+```{r configuracao}
+cat("Executar extração:", params$executar_extracao, "\n")
+cat("Arquivos na extração integral:", length(arquivos), "\n")
+cat("Banco auxiliar:", file.path(params$dir_saida, params$nome_duckdb), "\n")
+```
+
+
+
+
+
+# 4. Extração integral para DuckDB auxiliar
+
+Cada arquivo é lido **diretamente pelo DuckDB**. O `SELECT` extrai somente as três variáveis desejadas, sem materializar todos os registros como `data.frame` no R. O NB é normalizado removendo caracteres não numéricos, **sem completar com zeros à esquerda**. O CPF é normalizado para 11 dígitos; a quantidade de anos é convertida para `DOUBLE`. O CSV é lido integralmente por arquivo, mas apenas as variáveis selecionadas são inseridas no banco auxiliar.
+
+```{r extracao, results='asis'}
+
+if (!isTRUE(params$executar_extracao)) {
+
+  cat("**Modo diagnóstico:** extração integral não executada.\n")
+
+} else {
+
+  # Funcao local: on.exit() encerra o DuckDB ate em caso de erro.
+  processar_concedidos <- function() {
+
+  library(DBI)
+  library(duckdb)
+  library(data.table)
+
+  dir.create(
+    params$dir_saida,
+    recursive = TRUE,
+    showWarnings = FALSE
+  )
+
+  dbpath <- file.path(
+    params$dir_saida,
+    params$nome_duckdb
+  )
+
+  # Proteger o banco integrado original
+  banco_integrado <- file.path(
+    params$dir_saida,
+    "banco_beneficio_cad_rais.duckdb"
+  )
+
+  if (
+    normalizePath(dbpath, winslash = "/", mustWork = FALSE) ==
+    normalizePath(banco_integrado, winslash = "/", mustWork = FALSE)
+  ) {
+    stop("O banco auxiliar nao pode ser o banco integrado original.")
+  }
+
+  if (file.exists(dbpath)) {
+    message(
+      "DuckDB auxiliar existente. ",
+      "As tabelas da extracao serao recriadas."
+    )
+  }
+
+  con <- dbConnect(
+    duckdb::duckdb(),
+    dbdir = dbpath
+  )
+
+  # Fechar a conexao mesmo em caso de erro
+  on.exit(
+    try(
+      DBI::dbDisconnect(con, shutdown = TRUE),
+      silent = TRUE
+    ),
+    add = TRUE
+  )
+
+  dbExecute(
+    con,
+    "SET preserve_insertion_order=false"
+  )
+
+  dir_tmp <- file.path(
+    params$dir_saida,
+    "duckdb_tmp_contrib"
+  )
+
+  dir.create(
+    dir_tmp,
+    recursive = TRUE,
+    showWarnings = FALSE
+  )
+
+  dir_tmp <- normalizePath(
+    dir_tmp,
+    winslash = "/",
+    mustWork = TRUE
+  )
+
+  dbExecute(
+    con,
+    sprintf(
+      "SET temp_directory=%s",
+      as.character(dbQuoteString(con, dir_tmp))
+    )
+  )
+
+  # ==========================================================
+  # 1. RECRIAR AS TABELAS AUXILIARES
+  # ==========================================================
+
+  dbExecute(
+    con,
+    "CREATE OR REPLACE TABLE tb_staging (
+       nb VARCHAR,
+       cpf VARCHAR,
+       qt_anos_contribuicao DOUBLE,
+       arquivo VARCHAR,
+       ano_arquivo INTEGER
+     )"
+  )
+
+  dbExecute(
+    con,
+    "CREATE OR REPLACE TABLE tb_log (
+       arquivo VARCHAR,
+       n_inseridos BIGINT
+     )"
+  )
+
+  # ==========================================================
+  # 2. PROCESSAR TODOS OS CSVs
+  # ==========================================================
+
+  for (i in seq_along(arquivos)) {
+
+    arq <- arquivos[i]
+
+    cat(
+      sprintf(
+        "[%d/%d] %s\n",
+        i,
+        length(arquivos),
+        basename(arq)
+      )
+    )
+
+    flush.console()
+
+    # CSVs validados: separador virgula, 54 colunas
+    sql_from <- sprintf(
+      paste0(
+        "read_csv(",
+        "%s, ",
+        "delim=',', ",
+        "header=true, ",
+        "all_varchar=true, ",
+        "encoding='latin-1', ",
+        "sample_size=20000, ",
+        "strict_mode=false, ",
+        "null_padding=true",
+        ")"
+      ),
+      as.character(dbQuoteString(con, arq))
+    )
+
+    nomes_sql <- dbGetQuery(
+      con,
+      sprintf(
+        "DESCRIBE SELECT * FROM %s",
+        sql_from
+      )
+    )$column_name
+
+    if (length(nomes_sql) != 54L) {
+      stop(
+        "Esperadas 54 colunas em: ",
+        basename(arq)
+      )
+    }
+
+    # As posicoes 28, 38 e 39 ja foram verificadas nos
+    # 11 CSVs. Nao comparar nomes acentuados, pois eles
+    # podem chegar ao R com problemas de codificacao.
+    # O total de 54 colunas foi conferido acima.
+    # Usar os nomes devolvidos pelo DuckDB, com quoting SQL.
+    # Ordem: 28 = anos, 38 = CPF, 39 = NB.
+
+    # Identificar colunas pelos nomes reais do DuckDB
+    nb_col <- as.character(
+      dbQuoteIdentifier(con, nomes_sql[39])
+    )
+
+    cpf_col <- as.character(
+      dbQuoteIdentifier(con, nomes_sql[38])
+    )
+
+    anos_col <- as.character(
+      dbQuoteIdentifier(con, nomes_sql[28])
+    )
+
+    # Preservar apenas digitos do NB e CPF
+    nb_dig <- sprintf(
+      paste0(
+        "regexp_replace(",
+        "trim(CAST(%s AS VARCHAR)), ",
+        "'[^0-9]', '', 'g')"
+      ),
+      nb_col
+    )
+
+    cpf_dig <- sprintf(
+      paste0(
+        "regexp_replace(",
+        "trim(CAST(%s AS VARCHAR)), ",
+        "'[^0-9]', '', 'g')"
+      ),
+      cpf_col
+    )
+
+    anos_txt <- sprintf(
+      "trim(CAST(%s AS VARCHAR))",
+      anos_col
+    )
+
+    ano <- regmatches(
+      basename(arq),
+      regexpr(
+        "(19|20)[0-9]{2}",
+        basename(arq)
+      )
+    )
+
+    ano_sql <- if (
+      length(ano) == 1L && nzchar(ano)
+    ) {
+      ano
+    } else {
+      "NULL"
+    }
+
+    # ========================================================
+    # 3. INSERIR DADOS NO STAGING
+    # ========================================================
+
+    sql <- sprintf(
+      paste0(
+        "INSERT INTO tb_staging ",
+        "SELECT ",
+
+        "NULLIF(%s, '') AS nb, ",
+
+        "CASE ",
+        "WHEN length(%s) BETWEEN 1 AND 11 ",
+        "AND %s <> repeat('0', length(%s)) ",
+        "THEN lpad(%s, 11, '0') ",
+        "ELSE NULL END AS cpf, ",
+
+        "TRY_CAST(",
+        "CASE WHEN strpos(%s, ',') > 0 ",
+        "THEN replace(replace(%s, '.', ''), ',', '.') ",
+        "ELSE %s END AS DOUBLE",
+        ") AS qt_anos_contribuicao, ",
+
+        "%s AS arquivo, ",
+        "%s AS ano_arquivo ",
+
+        "FROM %s"
+      ),
+
+      nb_dig,
+
+      cpf_dig,
+      cpf_dig,
+      cpf_dig,
+      cpf_dig,
+
+      anos_txt,
+      anos_txt,
+      anos_txt,
+
+      as.character(
+        dbQuoteString(con, basename(arq))
+      ),
+
+      ano_sql,
+      sql_from
+    )
+
+    # Transacao individual por arquivo
+    dbBegin(con)
+
+    tryCatch({
+
+      dbExecute(con, sql)
+
+      sql_log <- sprintf(
+        paste0(
+          "INSERT INTO tb_log ",
+          "SELECT %s, count(*) ",
+          "FROM tb_staging ",
+          "WHERE arquivo = %s"
+        ),
+        as.character(
+          dbQuoteString(con, basename(arq))
+        ),
+        as.character(
+          dbQuoteString(con, basename(arq))
+        )
+      )
+
+      dbExecute(con, sql_log)
+
+      dbCommit(con)
+
+    }, error = function(e) {
+
+      dbRollback(con)
+
+      stop(
+        "Falha ao processar ",
+        basename(arq),
+        ": ",
+        conditionMessage(e)
+      )
+
+    })
+  }
+
+  # ==========================================================
+  # 4. AUDITORIA DA EXTRACAO
+  # ==========================================================
+
+  auditoria <- dbGetQuery(
+    con,
+    "
+    SELECT
+      count(*) AS registros_origem,
+      count(DISTINCT nb) AS nb_distintos,
+      count(*) FILTER (
+        WHERE nb IS NULL
+      ) AS nb_ausentes,
+      count(*) FILTER (
+        WHERE cpf IS NULL
+      ) AS cpf_ausentes,
+      count(*) FILTER (
+        WHERE qt_anos_contribuicao IS NULL
+      ) AS anos_ausentes
+    FROM tb_staging
+    "
+  )
+
+  mostrar(auditoria)
+
+  # Auditar NBs repetidos sem revelar identificadores
+  auditoria_duplicidades <- dbGetQuery(
+    con,
+    "
+    SELECT
+      count(*) AS nb_repetidos,
+      count(*) FILTER (
+        WHERE n_anos_distintos > 1
+      ) AS nb_com_anos_divergentes,
+      count(*) FILTER (
+        WHERE n_cpf_distintos > 1
+      ) AS nb_com_cpf_divergente
+    FROM (
+      SELECT
+        nb,
+        count(DISTINCT qt_anos_contribuicao)
+          AS n_anos_distintos,
+        count(DISTINCT cpf)
+          AS n_cpf_distintos
+      FROM tb_staging
+      WHERE nb IS NOT NULL
+      GROUP BY nb
+      HAVING count(*) > 1
+    ) d
+    "
+  )
+
+  mostrar(auditoria_duplicidades)
+
+  # ==========================================================
+  # 5. CONSOLIDAR UMA LINHA POR NB
+  # ==========================================================
+
+  # O indice antigo pode impedir a substituicao da tabela
+  dbExecute(
+    con,
+    "DROP INDEX IF EXISTS idx_contribuicao_nb"
+  )
+
+  dbExecute(
+    con,
+    "
+    CREATE OR REPLACE TABLE tb_contribuicao_nb AS
+
+    SELECT
+      nb,
+      cpf,
+      qt_anos_contribuicao
+
+    FROM (
+      SELECT
+        nb,
+        cpf,
+        qt_anos_contribuicao,
+
+        row_number() OVER (
+          PARTITION BY nb
+          ORDER BY
+            (qt_anos_contribuicao IS NOT NULL) DESC,
+            ano_arquivo DESC NULLS LAST,
+            (cpf IS NOT NULL) DESC,
+            arquivo DESC,
+            cpf DESC NULLS LAST,
+            qt_anos_contribuicao DESC NULLS LAST
+        ) AS rn
+
+      FROM tb_staging
+      WHERE nb IS NOT NULL
+    ) x
+
+    WHERE rn = 1
+    "
+  )
+
+  # Garantir unicidade da chave NB
+  dbExecute(
+    con,
+    "
+    CREATE UNIQUE INDEX idx_contribuicao_nb
+    ON tb_contribuicao_nb(nb)
+    "
+  )
+
+  # Persistir os resultados
+  dbExecute(con, "CHECKPOINT")
+
+  cat(
+    "\n**DuckDB auxiliar gerado:** `",
+    dbpath,
+    "`\n\n",
+    sep = ""
+  )
+
+  # ==========================================================
+  # 6. DIAGNOSTICO FINAL
+  # ==========================================================
+
+  resumo_final <- dbGetQuery(
+    con,
+    "
+    SELECT
+      count(*) AS n_nb_unicos,
+
+      count(*) FILTER (
+        WHERE cpf IS NULL
+      ) AS cpf_ausentes,
+
+      count(*) FILTER (
+        WHERE qt_anos_contribuicao IS NULL
+      ) AS anos_ausentes
+
+    FROM tb_contribuicao_nb
+    "
+  )
+
+  mostrar(resumo_final)
+
+  log_arquivos <- dbGetQuery(
+    con,
+    "
+    SELECT *
+    FROM tb_log
+    ORDER BY arquivo
+    "
+  )
+
+  mostrar(log_arquivos)
+
+  # Fechamento garantido pelo on.exit() da funcao.
+  }
+
+  processar_concedidos()
+}
+
+
+
+
+
+
+
+
+```
+
+
+
+
+```{r}
+library(DBI)
+library(duckdb)
+
+caminho <- paste0(
+  "E:/01_Bases/09_PREVIDENCIA/04_Dados/Saidas/",
+  "concedidos_nb_cpf_contribuicao.duckdb"
+)
+
+# 1. Verificacao fisica do arquivo
+cat("Arquivo existe:", file.exists(caminho), "\n")
+cat("Diretorio existe:", dir.exists(dirname(caminho)), "\n")
+
+print(file.info(caminho)[, c("size", "mtime")])
+
+# 2. Localizar arquivos relacionados
+print(list.files(
+  dirname(caminho),
+  pattern = "concedidos_nb_cpf_contribuicao",
+  full.names = TRUE
+))
+
+# 3. Abrir somente para leitura
+con <- dbConnect(
+  duckdb::duckdb(),
+  dbdir = caminho,
+  read_only = TRUE
+)
+
+# 4. Confirmar qual arquivo foi aberto pelo DuckDB
+print(dbGetQuery(con, "PRAGMA database_list"))
+
+# 5. Conferir quantidade extraida por CSV
+print(dbGetQuery(con, "
+  SELECT arquivo, n_inseridos
+  FROM tb_log
+  ORDER BY arquivo
+"))
+
+# 6. Conferir duplicidade e ausencia de NB
+print(dbGetQuery(con, "
+  SELECT
+    COUNT(*) AS total_linhas,
+    COUNT(DISTINCT nb) AS nb_distintos,
+    COUNT(*) FILTER (WHERE nb IS NULL) AS nb_nulos,
+    COUNT(*) - COUNT(DISTINCT nb) AS diferenca
+  FROM tb_staging
+"))
+
+dbDisconnect(con, shutdown = TRUE)
+
+
+library(DBI)
+library(duckdb)
+
+pasta <- "E:/01_Bases/09_PREVIDENCIA/04_Dados/Saidas"
+
+caminho_banco <- file.path(
+  pasta,
+  "concedidos_nb_cpf_contribuicao.duckdb"
+)
+
+caminho_backup <- file.path(
+  pasta,
+  "concedidos_nb_cpf_contribuicao_backup.parquet"
+)
+
+# Abrir os dados que ainda estão acessíveis
+con <- dbConnect(
+  duckdb::duckdb(),
+  dbdir = caminho_banco,
+  read_only = TRUE
+)
+
+# Exportar a tabela consolidada
+sql_backup <- sprintf(
+  paste0(
+    "COPY tb_contribuicao_nb TO %s ",
+    "(FORMAT PARQUET, COMPRESSION ZSTD)"
+  ),
+  as.character(dbQuoteString(con, caminho_backup))
+)
+
+dbExecute(con, sql_backup)
+
+# Verificar se o arquivo fisico foi criado
+cat("Parquet existe:", file.exists(caminho_backup), "\n")
+
+print(
+  file.info(caminho_backup)[, c("size", "mtime")]
+)
+
+# Verificar integridade do arquivo exportado
+if (file.exists(caminho_backup)) {
+
+  sql_verificacao <- sprintf(
+    "SELECT COUNT(*) AS total FROM read_parquet(%s)",
+    as.character(dbQuoteString(con, caminho_backup))
+  )
+
+  print(dbGetQuery(con, sql_verificacao))
+}
+
+dbDisconnect(con, shutdown = TRUE)
+
+library(DBI)
+library(duckdb)
+
+pasta <- "E:/01_Bases/09_PREVIDENCIA/04_Dados/Saidas"
+
+# Parquet já criado e validado
+parquet <- file.path(
+  pasta,
+  "concedidos_nb_cpf_contribuicao_backup.parquet"
+)
+
+# Novo DuckDB permanente
+banco_novo <- file.path(
+  pasta,
+  "concedidos_nb_cpf_contribuicao_final.duckdb"
+)
+
+# Verificações de segurança
+stopifnot(file.exists(parquet))
+
+if (file.exists(banco_novo)) {
+  stop("O banco definitivo já existe. Não será sobrescrito.")
+}
+
+# Criar conexão com novo banco
+con <- dbConnect(
+  duckdb::duckdb(),
+  dbdir = banco_novo
+)
+
+# Criar tabela diretamente do Parquet
+sql <- sprintf(
+  "CREATE TABLE tb_contribuicao_nb AS
+   SELECT
+     nb,
+     cpf,
+     qt_anos_contribuicao
+   FROM read_parquet(%s)",
+  as.character(dbQuoteString(con, parquet))
+)
+
+dbExecute(con, sql)
+
+# Garantir unicidade de NB
+dbExecute(con, "
+  CREATE UNIQUE INDEX idx_contribuicao_nb
+  ON tb_contribuicao_nb(nb)
+")
+
+# Conferir registros
+print(dbGetQuery(con, "
+  SELECT COUNT(*) AS total_registros
+  FROM tb_contribuicao_nb
+"))
+
+# Forçar persistência
+dbExecute(con, "CHECKPOINT")
+
+# Fechar conexão
+dbDisconnect(con, shutdown = TRUE)
+
+# Verificar existência física após fechar o banco
+cat("Banco criado:", file.exists(banco_novo), "\n")
+
+print(
+  file.info(banco_novo)[, c("size", "mtime")]
+)
+```
+
+
+
+# 5. Como incorporar depois ao banco de 60 colunas
+
+**Não executado neste documento.** Após conferir o total de NBs, a cobertura e eventuais duplicidades, poderemos conectar o DuckDB auxiliar ao banco integrado e fazer um `LEFT JOIN` por `nb`, criando **uma nova versão** da tabela e do Parquet. Antes disso, é necessário verificar se os NBs dos dois bancos têm a mesma padronização e se o tempo de contribuição corresponde ao conceito desejado.
+
+```sql
+-- Exemplo conceitual (NÃO EXECUTAR sem validar a chave e os caminhos):
+-- ATTACH '.../concedidos_nb_cpf_contribuicao.duckdb' AS contrib (READ_ONLY);
+-- SELECT b.*, c.qt_anos_contribuicao
+-- FROM tb_beneficio AS b
+-- LEFT JOIN contrib.tb_contribuicao_nb AS c ON b.nb = c.nb;
+```
+

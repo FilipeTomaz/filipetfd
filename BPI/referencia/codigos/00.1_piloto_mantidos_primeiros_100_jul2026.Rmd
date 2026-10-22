@@ -1,0 +1,460 @@
+---
+title: "INSS Mantidos — Piloto de leitura e validação"
+subtitle: "Piloto de 100 registros por arquivo | Datas DDMMAAAA, situação e duração"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: darkly
+    highlight: zenburn
+    toc: true
+    toc_float: true
+    df_print: paged
+params:
+  pasta_mantidos: "E:/01_Bases/09_PREVIDENCIA/04_Dados/Mantidos"
+  data_referencia: "2026-07-31"
+  n_por_arquivo: 100
+---
+
+<style>
+body { background-color: #1d2024; color: #e8e8e8; }
+.main-container { max-width: 96% !important; }
+pre:not(.sourceCode) { background-color: #282c32; color: #e8e8e8; }
+.table { color: #e8e8e8; }
+.table > thead > tr > th { color: #ffffff; background-color: #303640; }
+.table > tbody > tr > td { color: #e8e8e8; background-color: #242930; }
+.table > tbody > tr:nth-child(odd) > td { background-color: #2d333b; }
+</style>
+
+## Objetivo e limites do piloto
+
+Este relatório **lê somente os primeiros 100 registros de cada CSV** da pasta Mantidos (19 arquivos no inventário anterior), totalizando **até 1.900 registros**. Não percorre integralmente os aproximadamente 106 GiB nem carrega a base completa no R.
+
+**Atenção ao viés:** os primeiros registros **não constituem amostra aleatória**. Os arquivos podem estar ordenados por data, UF, situação ou outro campo. Portanto, percentuais apresentados neste relatório são **exclusivamente diagnósticos da amostra de teste** e **não representam estimativas para a população de Mantidos**. Além disso, cada arquivo fornece até 100 linhas independentemente do seu tamanho.
+
+O relatório apresenta somente **estatísticas agregadas**. Não imprime nem exporta NB, CPF, nomes, endereços ou linhas individuais. Os registros lidos existem apenas na sessão local do R que produz o relatório. O teste anterior mostrou que, na amostra, **DIB e DCB usam DDMMAAAA (`%d%m%Y`)**; agora confirmamos novamente o padrão e a qualidade da conversão.
+
+## 1. Configuração
+
+```{r configuracao, message=FALSE, warning=FALSE}
+library(data.table)
+library(knitr)
+
+pasta_mantidos <- params$pasta_mantidos
+data_referencia <- as.Date(params$data_referencia)
+n_por_arquivo <- as.integer(params$n_por_arquivo)
+
+stopifnot(dir.exists(pasta_mantidos))
+stopifnot(!is.na(data_referencia), n_por_arquivo >= 1L)
+
+arquivos <- sort(list.files(
+  pasta_mantidos,
+  pattern = "\\.csv$",
+  full.names = TRUE,
+  recursive = TRUE,
+  ignore.case = TRUE
+))
+
+if (!length(arquivos)) stop("Nenhum CSV encontrado na pasta Mantidos.")
+
+cat("Arquivos CSV encontrados:", length(arquivos), "\n\n")
+cat("Máximo de linhas por arquivo:", n_por_arquivo, "\n\n")
+cat("Data de referência analítica (a confirmar):", format(data_referencia, "%d/%m/%Y"), "\n")
+```
+
+## 2. Colunas selecionadas para o diagnóstico
+
+Todos os 19 cabeçalhos tinham **51 posições, com a mesma ordem**, segundo o diagnóstico anterior. Para evitar problemas com a codificação dos acentos, a leitura seleciona as posições já identificadas, atribuindo nomes técnicos sem acentos **somente aos campos de trabalho**. A leitura integral futura será preparada com os nomes validados e auditoria de esquema.
+
+```{r mapeamento, results='asis'}
+posicoes <- c(
+  indicador_cessacao = 2L,
+  competencia_dcb = 5L,
+  grupo_situacao = 14L,
+  motivo_cessacao_codigo = 15L,
+  motivo_cessacao_nome = 16L,
+  nb = 19L,
+  situacao_codigo = 31L,
+  situacao_nome = 32L,
+  duracao_informada_dias = 39L,
+  data_cessacao = 44L,
+  data_inicio = 47L,
+  ultima_macica = 51L
+)
+
+print(knitr::kable(
+  data.frame(campo = names(posicoes), posicao_no_csv = unname(posicoes)),
+  format = "html", row.names = FALSE
+))
+```
+
+## 3. Ler os primeiros registros de cada CSV
+
+Os arquivos foram identificados no diagnóstico anterior com separador **vírgula** e cabeçalhos compatíveis com **Windows-1252 (CP1252)**. Usamos `read.csv(nrows = 100, fileEncoding = "CP1252")`, que respeita campos entre aspas e limita a quantidade de registros lidos. Todas as colunas são inicialmente tratadas como texto, inclusive NB e datas, para evitar conversões automáticas incorretas.
+
+Uma falha em determinado arquivo **não interrompe o processamento dos demais**. Nenhuma linha individual será exibida.
+
+```{r leitura-piloto, message=FALSE, warning=FALSE}
+limpar_texto <- function(x) {
+  x <- trimws(as.character(x))
+  x[x %in% c("", "NA", "N/A", "NULL", "null")] <- NA_character_
+  x
+}
+
+ler_piloto <- function(arq) {
+  tryCatch({
+    dados <- utils::read.csv(
+      file = arq,
+      header = TRUE,
+      sep = ",",
+      quote = "\"",
+      fileEncoding = "CP1252",
+      check.names = FALSE,
+      colClasses = "character",
+      stringsAsFactors = FALSE,
+      na.strings = character(),
+      comment.char = "",
+      nrows = n_por_arquivo
+    )
+
+    if (ncol(dados) != 51L) {
+      stop(sprintf("O leitor encontrou %d colunas, mas eram esperadas 51.", ncol(dados)))
+    }
+
+    # Localiza a espécie sem presumir sua posição.
+    nomes_ascii <- iconv(names(dados), from = "", to = "ASCII//TRANSLIT", sub = "")
+    nomes_ascii <- tolower(nomes_ascii)
+    indice_especie <- grep("^especie.*codigo", nomes_ascii)
+
+    amostra <- as.data.table(dados[, unname(posicoes), drop = FALSE])
+    setnames(amostra, names(posicoes))
+
+    amostra[, especie_codigo := if (length(indice_especie) == 1L) {
+      limpar_texto(dados[[indice_especie]])
+    } else {
+      rep(NA_character_, .N)
+    }]
+
+    for (nm in names(amostra)) {
+      set(amostra, j = nm, value = limpar_texto(amostra[[nm]]))
+    }
+    amostra[, arquivo := basename(arq)]
+    setcolorder(amostra, c("arquivo", "especie_codigo", names(posicoes)))
+
+    list(
+      dados = amostra,
+      diagnostico = data.table(
+        arquivo = basename(arq),
+        linhas_lidas = nrow(amostra),
+        colunas_detectadas = ncol(dados),
+        especie_identificada = length(indice_especie) == 1L,
+        leitura_ok = TRUE,
+        observacao = ""
+      )
+    )
+  }, error = function(e) {
+    list(
+      dados = NULL,
+      diagnostico = data.table(
+        arquivo = basename(arq),
+        linhas_lidas = 0L,
+        colunas_detectadas = NA_integer_,
+        especie_identificada = FALSE,
+        leitura_ok = FALSE,
+        observacao = "Erro ao ler cabeçalho ou registros: verificar separador, codificação e aspas no CSV."
+      )
+    )
+  })
+}
+
+pilotos <- lapply(arquivos, ler_piloto)
+diagnostico_arquivos <- rbindlist(lapply(pilotos, `[[`, "diagnostico"))
+partes_validas <- Filter(Negate(is.null), lapply(pilotos, `[[`, "dados"))
+
+if (!length(partes_validas)) {
+  stop("Nenhum arquivo pôde ser lido. Verifique as informações de codificação do diagnóstico anterior.")
+}
+
+amostra <- rbindlist(partes_validas, use.names = TRUE, fill = TRUE)
+```
+
+```{r resumo-leitura, results='asis'}
+cat("**Registros lidos no piloto:**", format(nrow(amostra), big.mark = ".", decimal.mark = ","), "\n\n")
+cat("**Arquivos lidos com sucesso:**", sum(diagnostico_arquivos$leitura_ok), "de", length(arquivos), "\n\n")
+print(knitr::kable(diagnostico_arquivos, format = "html", row.names = FALSE))
+```
+
+## 4. Domínio dos códigos e nomes de situação
+
+Estas tabelas permitem interpretar a relação entre código, nome e grupo de situação. **Não classifique ainda os códigos como ativos ou cessados**, pois isso depende da documentação e da consistência com a DCB.
+
+```{r frequencias-situacao, results='asis'}
+frequencia_situacao <- amostra[, .N,
+  by = .(situacao_codigo, situacao_nome, grupo_situacao)
+][order(-N, situacao_codigo)]
+
+frequencia_situacao[, percentual_amostra := round(100 * N / nrow(amostra), 2)]
+
+print(knitr::kable(frequencia_situacao, format = "html", row.names = FALSE))
+```
+
+```{r frequencias-grupo, results='asis'}
+frequencia_grupo <- amostra[, .N, by = grupo_situacao][order(-N)]
+frequencia_grupo[, percentual_amostra := round(100 * N / nrow(amostra), 2)]
+print(knitr::kable(frequencia_grupo, format = "html", row.names = FALSE))
+```
+
+## 5. Motivos de cessação ou suspensão
+
+```{r frequencias-motivo, results='asis'}
+frequencia_motivo <- amostra[, .N,
+  by = .(motivo_cessacao_codigo, motivo_cessacao_nome)
+][order(-N)]
+frequencia_motivo[, percentual_amostra := round(100 * N / nrow(amostra), 2)]
+
+print(knitr::kable(frequencia_motivo, format = "html", row.names = FALSE))
+```
+
+## 6. Datas DIB e DCB — validação do formato DDMMAAAA
+
+O diagnóstico anterior encontrou **1.900 DIBs de oito dígitos** e **1.658 DCBs de oito dígitos**. Todas essas datas foram interpretadas no teste como `DDMMAAAA`, enquanto `AAAAMMDD` não interpretou nenhuma. Este relatório incorpora a conversão correta e faz uma validação adicional de ida e volta (`Date` → texto original). Os **242 valores restantes da DCB** têm um dígito; não serão convertidos automaticamente em data.
+
+A data de **31/07/2026 é uma referência de análise provisória**: a competência efetiva dos arquivos de Mantidos ainda não foi comprovada.
+
+### 6.1. Padrões mascarados das datas
+
+Este diagnóstico mostra apenas a estrutura dos campos; nenhuma data original é exibida.
+
+```{r formatos-datas, results='asis'}
+mascarar_padrao <- function(x) {
+  x <- limpar_texto(x)
+  x <- gsub("[0-9]", "9", x)
+  x <- gsub("[[:alpha:]]", "A", x)
+  x[is.na(x)] <- "[VAZIO]"
+  x
+}
+
+padroes <- rbindlist(lapply(c("data_inicio", "data_cessacao"), function(campo) {
+  bruto <- limpar_texto(amostra[[campo]])
+  data.table(
+    variavel = campo,
+    padrao = mascarar_padrao(bruto),
+    comprimento = nchar(bruto)
+  )[, .(n_registros = .N), by = .(variavel, padrao, comprimento)]
+}))
+
+padroes[, percentual_amostra := round(100 * n_registros / sum(n_registros), 2), by = variavel]
+setorder(padroes, variavel, -n_registros)
+print(knitr::kable(padroes, format = "html", row.names = FALSE))
+```
+
+### 6.2. Conversão e validação das datas
+
+```{r conversao-datas, message=FALSE, warning=FALSE}
+marcadores_ausencia <- c("0", "00000000", "00/00/0000", "0000-00-00", "-")
+
+# Recusa valores sem exatamente 8 dígitos; preserva os CSVs originais.
+interpretar_data <- function(x) {
+  x <- limpar_texto(x)
+  oito_digitos <- !is.na(x) & grepl("^[0-9]{8}$", x)
+  x[!oito_digitos] <- NA_character_
+
+  resultado <- suppressWarnings(as.Date(x, format = "%d%m%Y"))
+
+  # A verificação inversa evita aceitar datas normalizadas silenciosamente.
+  idx <- which(!is.na(resultado))
+  if (length(idx)) {
+    invalidos <- idx[format(resultado[idx], "%d%m%Y") != x[idx]]
+    if (length(invalidos)) resultado[invalidos] <- as.Date(NA)
+  }
+  resultado
+}
+
+amostra[, dib := interpretar_data(data_inicio)]
+amostra[, dcb := interpretar_data(data_cessacao)]
+
+amostra[, dib_preenchida := !is.na(data_inicio) &
+  !(data_inicio %in% marcadores_ausencia)]
+amostra[, dcb_preenchida := !is.na(data_cessacao) &
+  !(data_cessacao %in% marcadores_ausencia)]
+
+amostra[, dib_valida := !is.na(dib)]
+amostra[, dcb_valida := !is.na(dcb)]
+amostra[, dcb_ate_referencia := dcb_valida & dcb <= data_referencia]
+amostra[, dcb_posterior_referencia := dcb_valida & dcb > data_referencia]
+amostra[, dcb_anterior_dib := dcb_valida & dib_valida & dcb < dib]
+amostra[, dib_posterior_referencia := dib_valida & dib > data_referencia]
+
+# Diferença entre datas, em dias; aplica-se somente quando ambas existem.
+amostra[, duracao_calculada_dias := as.numeric(dcb - dib)]
+
+# Duração informada: tentativa conservadora de conversão decimal.
+amostra[, duracao_informada_num := suppressWarnings(as.numeric(
+  gsub(",", ".", duracao_informada_dias, fixed = TRUE)
+))]
+
+amostra[, duracao_comparavel := !is.na(duracao_informada_num) &
+  !is.na(duracao_calculada_dias)]
+amostra[, diferenca_duracao_dias := abs(duracao_informada_num - duracao_calculada_dias)]
+amostra[, duracao_divergente := duracao_comparavel & diferenca_duracao_dias > 1]
+
+media_segura <- function(x) if (all(is.na(x))) NA_real_ else mean(x, na.rm = TRUE)
+mediana_segura <- function(x) if (all(is.na(x))) NA_real_ else median(x, na.rm = TRUE)
+```
+
+### 6.3. Resumo das datas por situação do benefício
+
+As durações calculadas abaixo são **observadas somente para registros com DIB e DCB válidas**. A ausência de DCB, isoladamente, não comprova que um benefício estava ativo na data de referência.
+
+```{r resumo-datas, results='asis'}
+resumo_datas <- amostra[, .(
+  n_amostra = .N,
+  dib_interpretavel = sum(dib_valida),
+  dib_preenchida_nao_interpretada = sum(dib_preenchida & !dib_valida),
+  dcb_vazia_ou_marcador = sum(!dcb_preenchida),
+  dcb_preenchida = sum(dcb_preenchida),
+  dcb_interpretavel = sum(dcb_valida),
+  dcb_preenchida_nao_interpretada = sum(dcb_preenchida & !dcb_valida),
+  dcb_ate_referencia = sum(dcb_ate_referencia),
+  dcb_apos_referencia = sum(dcb_posterior_referencia),
+  dib_apos_referencia = sum(dib_posterior_referencia),
+  dcb_antes_dib = sum(dcb_anterior_dib),
+  duracao_media_anos = round(media_segura(duracao_calculada_dias) / 365.2425, 2),
+  duracao_mediana_anos = round(mediana_segura(duracao_calculada_dias) / 365.2425, 2)
+), by = .(situacao_codigo, situacao_nome, grupo_situacao)][order(-n_amostra)]
+
+print(knitr::kable(resumo_datas, format = "html", row.names = FALSE))
+```
+
+### 6.4. Cobertura e coerência das datas em cada CSV
+
+```{r datas-por-arquivo, results='asis'}
+datas_por_arquivo <- amostra[, .(
+  n = .N,
+  pct_dib_interpretavel = round(100 * mean(dib_valida), 1),
+  pct_dcb_preenchida = round(100 * mean(dcb_preenchida), 1),
+  pct_dcb_interpretavel = round(100 * mean(dcb_valida), 1),
+  n_dcb_preenchida_nao_interpretada = sum(dcb_preenchida & !dcb_valida),
+  n_dcb_apos_referencia = sum(dcb_posterior_referencia),
+  n_dcb_antes_dib = sum(dcb_anterior_dib)
+), by = arquivo][order(arquivo)]
+
+print(knitr::kable(datas_por_arquivo, format = "html", row.names = FALSE))
+```
+
+## 7. Validação da duração informada versus calculada
+
+A comparação usa a diferença de dias `DCB - DIB`, somente quando ambas as datas são interpretáveis e a duração informada é numérica. **Uma divergência de até um dia** é mostrada à parte por poder refletir uma convenção de contagem inclusiva. Isso não prova, por si só, que a variável original de duração usa a mesma regra temporal.
+
+```{r comparacao-duracao, results='asis'}
+comparacao_duracao <- amostra[, .(
+  n_amostra = .N,
+  n_duracao_informada_numerica = sum(!is.na(duracao_informada_num)),
+  n_duracao_comparavel = sum(duracao_comparavel),
+  n_iguais = sum(duracao_comparavel & diferenca_duracao_dias == 0, na.rm = TRUE),
+  n_diferenca_ate_1_dia = sum(duracao_comparavel & diferenca_duracao_dias > 0 &
+    diferenca_duracao_dias <= 1, na.rm = TRUE),
+  n_divergentes_mais_1_dia = sum(duracao_divergente, na.rm = TRUE),
+  diferenca_mediana_dias = round(mediana_segura(diferenca_duracao_dias), 1)
+), by = .(situacao_codigo, situacao_nome)][order(-n_amostra)]
+
+print(knitr::kable(comparacao_duracao, format = "html", row.names = FALSE))
+```
+
+```{r consistencia-situacao-dcb, results='asis'}
+cat("\n### Grupo de situação × existência de DCB\n\n")
+coerencia_situacao <- amostra[, .(
+  n = .N,
+  dcb_valida = sum(dcb_valida),
+  sem_dcb_valida = sum(!dcb_valida),
+  dcb_apos_referencia = sum(dcb_posterior_referencia)
+), by = grupo_situacao][order(-n)]
+
+print(knitr::kable(coerencia_situacao, format = "html", row.names = FALSE))
+```
+
+## 8. Competências e indicação de cessação administrativa
+
+`Compet. Última Maciça (Código)` **não é automaticamente a competência de extração**. Precisamos examinar seus códigos e confirmar sua definição na documentação de Mantidos. Também é importante comparar `Competência DCB` e `Ind. Cessação de Benef. Administ.` com a data DCB.
+
+```{r competencias, results='asis'}
+frequencia_macica <- amostra[, .N, by = ultima_macica][order(-N)]
+frequencia_competencia_dcb <- amostra[, .N, by = competencia_dcb][order(-N)]
+frequencia_indicador <- amostra[, .N, by = indicador_cessacao][order(-N)]
+
+cat("\n### Competência da última maciça (códigos da amostra)\n\n")
+print(knitr::kable(head(frequencia_macica, 40L), format = "html", row.names = FALSE))
+cat("\n### Competência DCB (códigos da amostra)\n\n")
+print(knitr::kable(head(frequencia_competencia_dcb, 40L), format = "html", row.names = FALSE))
+cat("\n### Indicador de cessação administrativa\n\n")
+print(knitr::kable(frequencia_indicador, format = "html", row.names = FALSE))
+```
+
+## 9. Validação preliminar de NB e espécie
+
+O NB é utilizado somente para calcular **preenchimento, comprimento e duplicidades**. Nenhum identificador será exibido. A leitura de 100 linhas por arquivo não permite estimar a quantidade total de NBs duplicados nos Mantidos.
+
+```{r chaves, results='asis'}
+amostra[, nb_normalizado := fifelse(is.na(nb), NA_character_,
+  gsub("[^0-9]", "", nb))]
+amostra[nb_normalizado == "", nb_normalizado := NA_character_]
+
+chaves_por_arquivo <- amostra[, .(
+  n_amostra = .N,
+  nb_sem_identificador = sum(is.na(nb_normalizado)),
+  nb_unicos = uniqueN(nb_normalizado, na.rm = TRUE),
+  nb_repetidos_na_amostra = sum(duplicated(nb_normalizado[!is.na(nb_normalizado)])),
+  comprimento_min = if (all(is.na(nb_normalizado))) NA_integer_ else
+    min(nchar(nb_normalizado[!is.na(nb_normalizado)])),
+  comprimento_max = if (all(is.na(nb_normalizado))) NA_integer_ else
+    max(nchar(nb_normalizado[!is.na(nb_normalizado)]))
+), by = arquivo][order(arquivo)]
+
+print(knitr::kable(chaves_por_arquivo, format = "html", row.names = FALSE))
+```
+
+```{r especies, results='asis'}
+if (any(!is.na(amostra$especie_codigo))) {
+  frequencia_especies <- amostra[, .N, by = especie_codigo][order(-N)]
+  cat("\n### Códigos de espécie presentes nas primeiras linhas\n\n")
+  print(knitr::kable(frequencia_especies, format = "html", row.names = FALSE))
+} else {
+  cat("Não foi possível identificar automaticamente a coluna de espécie pelo cabeçalho.\n")
+}
+```
+
+## 10. Critérios para avançar à integração
+
+```{r criterios, results='asis'}
+criterios <- data.table(
+  verificacao = c(
+    "Todos os CSVs lidos no piloto",
+    "51 colunas encontradas em todos os CSVs lidos",
+    "Código de espécie localizado por nome",
+    "NB preenchido em todas as linhas amostradas",
+    "Datas DIB e DCB preenchidas interpretadas sem falhas",
+    "Definição temporal de julho de 2026 confirmada"
+  ),
+  situacao = c(
+    if (all(diagnostico_arquivos$leitura_ok)) "OK" else "Verificar",
+    if (all(diagnostico_arquivos$colunas_detectadas[diagnostico_arquivos$leitura_ok] == 51L)) "OK" else "Verificar",
+    if (all(diagnostico_arquivos$especie_identificada[diagnostico_arquivos$leitura_ok])) "OK" else "Verificar",
+    if (all(!is.na(amostra$nb_normalizado))) "OK" else "Verificar",
+    if (all(!amostra$dcb_preenchida | amostra$dcb_valida) &&
+        all(!amostra$dib_preenchida | amostra$dib_valida)) "OK" else "Verificar",
+    "Pendente: depende de documento/fonte"
+  )
+)
+
+print(knitr::kable(criterios, format = "html", row.names = FALSE))
+```
+
+## 11. Interpretação e próximo passo
+
+- **Não utilizar as frequências deste piloto como estimativas populacionais:** as linhas são as primeiras de cada arquivo e podem estar ordenadas.
+- **Não interpretar DCB vazia como prova de benefício ativo**, nem NB não encontrado em Mantidos como benefício cessado.
+- **Não assumir que a competência da última maciça é a data de posição dos arquivos.** Validar a documentação e a distribuição dos valores.
+- **O formato de DIB e DCB confirmado na amostra é DDMMAAAA (`%d%m%Y`)**. As datas válidas permitem comparar duração calculada e duração informada, mas divergências devem ser auditadas.
+- **Antes da leitura integral dos 19 arquivos**, confirmar os códigos de situação e a relação com DCB, DIB e motivos de cessação. Checar também duplicidades de NB.
+- O passo seguinte será realizar a **integração com Concedidos por NB**, projetando somente os campos necessários em DuckDB e persistindo os resultados em disco, com auditoria por espécie (21, 41 e 88) e clientela.
+
+**Segurança:** nenhum identificador pessoal é mostrado nas tabelas. Mantenha o HTML em ambiente restrito e não compartilhe registros individuais.

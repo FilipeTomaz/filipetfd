@@ -1,0 +1,377 @@
+---
+title: "Auditoria de estrutura e dicionário — Benefícios, CadÚnico e RAIS"
+author: ""
+date: "`r format(Sys.Date(), '%d/%m/%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+---
+
+## Objetivo
+
+Inspecionar o esquema do arquivo Parquet sem carregar toda a base na memória e produzir um dicionário consolidado a partir das definições fornecidas, sujeito à validação com os layouts oficiais e com o código que criou o arquivo. As descrições abaixo derivam do script e da documentação compartilhados; **não** são um dicionário oficial das fontes.
+
+```{r setup, message=FALSE, warning=FALSE}
+library(DBI)
+library(duckdb)
+library(data.table)
+library(knitr)
+
+pasta <- "E:/01_Bases/09_PREVIDENCIA/04_Dados/Saidas"
+arquivo <- file.path(pasta, "banco_beneficio_cad_rais.parquet")
+if (!file.exists(arquivo)) stop("Parquet não encontrado: ", arquivo)
+
+con <- DBI::dbConnect(duckdb::duckdb())
+DBI::dbExecute(con, "SET threads=8")
+DBI::dbExecute(con, "SET preserve_insertion_order=false")
+
+# Aspas seguras para caminhos em literais SQL
+sql_arq <- as.character(DBI::dbQuoteString(con, normalizePath(arquivo, winslash="/", mustWork=TRUE)))
+```
+
+## 1. Estrutura real do arquivo
+
+A consulta `DESCRIBE` lê o esquema do Parquet; não materializa os registros em R.
+
+```{r esquema}
+esquema <- DBI::dbGetQuery(con, sprintf(
+  "DESCRIBE SELECT * FROM read_parquet(%s)", sql_arq
+))
+
+estrutura <- data.table(
+  ordem = seq_len(nrow(esquema)),
+  variavel = esquema$column_name,
+  tipo_duckdb = esquema$column_type
+)
+
+cat("Arquivo:", arquivo, "\n")
+cat("Total de colunas:", nrow(estrutura), "\n")
+knitr::kable(estrutura)
+```
+
+## 2. Prévia opcional de dados
+
+Esta consulta busca apenas cinco registros e não é necessária para construir o dicionário. Como contém CPF e NB, a prévia exclui esses campos e outras colunas de identificação direta.
+
+```{r previa}
+colunas_sensiveis <- c("cpf", "nb", "nome_trabalhador", "pis", "cnpj_cei", "ctps", "numero_ctps")
+colunas_prev <- setdiff(estrutura$variavel, colunas_sensiveis)
+colunas_prev <- head(colunas_prev, 12)
+if (length(colunas_prev) > 0) {
+  lista_sql <- paste(as.character(DBI::dbQuoteIdentifier(con, colunas_prev)), collapse=", ")
+  previa <- DBI::dbGetQuery(con, sprintf(
+    "SELECT %s FROM read_parquet(%s) LIMIT 5", lista_sql, sql_arq
+  ))
+  knitr::kable(previa)
+}
+```
+
+## 3. Dicionário preliminar baseado no pipeline
+
+O cadastro de definições é independente do esquema. Somente as variáveis que **existirem efetivamente** no Parquet serão incorporadas ao dicionário final. Campos inesperados serão listados como "A documentar".
+
+```{r definicoes}
+def <- data.table::data.table(
+  variavel = c(
+    "nb", "clientela_codigo", "clientela", "nb_anterior", "especie", "especie_nome",
+    "cid", "despacho_codigo", "despacho", "sexo_codigo", "sexo",
+    "vl_juros_atrasados", "vl_correcao_monetaria", "vl_rmi", "vl_rmi_convertido", "rmi_em_sm",
+    "dt_ddb", "dt_dib", "dt_der", "dt_dii", "dt_nascimento", "uf", "uf_processadora",
+    "municipio_codigo", "municipio", "cpf", "localizado_cadunico", "uf_cad",
+    "municipio_cad_ibge", "cod_local_domici_fam", "cod_deficiencia_memb",
+    "ind_def_cegueira_memb", "ind_def_baixa_visao_memb", "ind_def_surdez_profunda_memb",
+    "ind_def_surdez_leve_memb", "ind_def_fisica_memb", "ind_def_mental_memb",
+    "ind_def_sindrome_down_memb", "ind_def_transtorno_mental_memb",
+    "cod_curso_frequentou_pessoa_memb", "cod_trabalho_12_meses_memb",
+    "qtd_meses_12_meses_memb", "val_renda_bruta_12_meses_memb",
+    "localizado_rais", "vinculo_ativo_3112", "tipo_vinculo", "tipo_admissao", "mes_admissao",
+    "faixa_tempo_emprego", "tempo_emprego", "faixa_remuneracao_media_sm",
+    "remuneracao_media_sm", "valor_remuneracao_media", "cbo_1994", "cbo_2002", "cnae_1", "cnae_2",
+    "vl_renda_media_fam", "vl_renda_total_fam", "qt_membro_familia"
+  ),
+  origem = c(
+    rep("INSS Concedidos", 26),
+    rep("CadÚnico", 17),
+    rep("RAIS 2024", 14),
+    rep("CadÚnico família (acréscimo posterior)", 3)
+  ),
+  descricao = c(
+    "Número do benefício; chave única da base final",
+    "Código da clientela previdenciária", "Descrição da clientela previdenciária",
+    "Número do benefício anterior", "Código da espécie do benefício", "Descrição da espécie do benefício",
+    "Código CID informado na concessão, quando aplicável",
+    "Código do despacho", "Descrição do despacho", "Código do sexo do titular", "Descrição do sexo do titular",
+    "Valor de juros atrasados", "Valor de correção monetária", "Renda mensal inicial (RMI) nominal",
+    "RMI convertida conforme regra da fonte; comparar anos exige cautela",
+    "RMI expressa em salários mínimos, quando disponível",
+    "Data do despacho do benefício (DDB)", "Data de início do benefício (DIB)",
+    "Data de entrada do requerimento (DER)", "Data de início da incapacidade (DII), quando aplicável",
+    "Data de nascimento do titular", "UF de residência derivada do código municipal previdenciário",
+    "UF processadora da concessão; não equivale necessariamente à residência",
+    "Código de município de residência na codificação da fonte previdenciária",
+    "Nome do município de residência", "CPF do titular normalizado para 11 dígitos; identificador sensível",
+    "S se o CPF foi localizado na fotografia do CadÚnico utilizada; N caso contrário",
+    "UF do cadastro no CadÚnico", "Código IBGE do município cadastral",
+    "Código da localização do domicílio familiar", "Código de deficiência do membro",
+    "Indicador de cegueira", "Indicador de baixa visão", "Indicador de surdez profunda",
+    "Indicador de surdez leve", "Indicador de deficiência física", "Indicador de deficiência mental",
+    "Indicador de síndrome de Down", "Indicador de transtorno mental",
+    "Código de curso frequentado pelo membro", "Código de trabalho nos últimos 12 meses",
+    "Quantidade de meses trabalhados nos últimos 12 meses",
+    "Campo 808 do CadÚnico tratado; documentação da rodada o classifica como faixa de renda",
+    "S se o CPF foi localizado na RAIS 2024; N caso contrário",
+    "Situação do vínculo principal em 31/12/2024",
+    "Código do tipo de vínculo selecionado", "Código do tipo de admissão do vínculo",
+    "Mês extraído da data de admissão", "Faixa do tempo de emprego do vínculo selecionado",
+    "Tempo de emprego em meses", "Faixa da remuneração média em salários mínimos",
+    "Remuneração média em salários mínimos", "Remuneração média nominal do vínculo",
+    "Código de ocupação CBO 1994", "Código de ocupação CBO 2002",
+    "Classe de atividade CNAE 95", "Classe de atividade CNAE 2.0",
+    "Renda familiar mensal per capita; definição e regra de cálculo a verificar no código adicional",
+    "Renda familiar total; período e composição a verificar no código adicional",
+    "Quantidade de membros da família; critério de contagem a verificar no código adicional"
+  )
+)
+
+stopifnot(!anyDuplicated(def$variavel))
+```
+
+## 3.1. Complemento do dicionário fornecido: campos de origem e regras
+
+Este chunk incorpora o dicionário fornecido, desmembrando as entradas agrupadas em variáveis individuais. A estrutura efetiva do Parquet continua sendo a referência para nomes e tipos. Campos de origem ou regras não documentados são identificados explicitamente, sem inferir códigos não confirmados.
+
+```{r complemento_dicionario}
+# Mapeamento por variável, com uma linha por coluna do Parquet.
+mapa <- data.table::data.table(
+  variavel = def$variavel,
+  campo_fonte = NA_character_,
+  regra_ou_observacao = NA_character_
+)
+
+atribuir <- function(vars, fonte, regra = NA_character_) {
+  stopifnot(length(fonte) %in% c(1L, length(vars)))
+  if (!is.na(regra[1]) && length(regra) == 1L) regra <- rep(regra, length(vars))
+  mapa[variavel %in% vars, campo_fonte := fonte]
+  if (length(regra) == 1L && is.na(regra)) return(invisible(NULL))
+  mapa[match(vars, variavel), regra_ou_observacao := regra]
+  invisible(NULL)
+}
+
+atribuir("nb", "NB", "Chave única: uma linha por NB")
+atribuir(c("clientela_codigo", "clientela"), c("Clientela (Código)", "Clientela (Nome)"))
+atribuir("nb_anterior", "NB Anterior")
+atribuir(c("especie", "especie_nome"), c("Espécie (Código)", "Espécie (Nome)"),
+         "Espécies 21, 41 e 88; espécie numérica extraída do campo de código")
+atribuir("cid", "CID 10 (Código)", "Pode estar ausente nas espécies selecionadas")
+atribuir(c("despacho_codigo", "despacho"), c("Despacho (Código)", "Despacho (Nome)"))
+atribuir(c("sexo_codigo", "sexo"), c("Sexo Titular (Código)", "Sexo Titular (Nome)"))
+atribuir("vl_juros_atrasados", "Vl Juros Atrasados", "Conversão de separador decimal")
+atribuir("vl_correcao_monetaria", "Vl Correção Monetária", "Conversão de separador decimal")
+atribuir("vl_rmi", "Vl RMI - Renda Mensal Inicial", "RMI nominal na concessão")
+atribuir("vl_rmi_convertido", "Vl RMI Convertido",
+         "Documentação alerta para falta de comparabilidade direta entre anos")
+atribuir("rmi_em_sm", "Quantidade Salários Mínimos - RMI", "RMI em múltiplos do salário mínimo")
+atribuir(c("dt_ddb", "dt_dib", "dt_der", "dt_dii", "dt_nascimento"),
+         c("DDB - Data Despacho Benefício", "DIB - Data Início Benefício",
+           "DER - Data Entrada Requerimento", "DII - Data Início Incapacidade",
+           "Data Nascimento Titular"), "Datas padronizadas como DATE")
+atribuir("uf", "Município Resid Titular (Código)",
+         "UF de residência derivada dos dois primeiros dígitos do código SUIBE")
+atribuir("uf_processadora", "UF (Nome)", "Unidade processadora; não equivale à residência")
+atribuir(c("municipio_codigo", "municipio"),
+         c("Município Resid Titular (Código)", "Município Resid Titular (Nome)"))
+atribuir("cpf", "CPF Titular", "Normalização para 11 dígitos; não equivale a validação de dígitos verificadores")
+atribuir("localizado_cadunico", "Derivada do cruzamento por CPF",
+         "S se localizado no CadÚnico de junho/2024; N caso contrário")
+atribuir(c("uf_cad", "municipio_cad_ibge"), "cd_ibge_cadastro",
+         c("UF derivada dos dois primeiros dígitos do código IBGE",
+           "Código municipal IBGE de sete dígitos"))
+atribuir("cod_local_domici_fam", "co_local_domic_fam", "1 = urbano; 2 = rural (conferir dicionário da fonte)")
+atribuir("cod_deficiencia_memb", "co_deficiencia_memb")
+inds <- c("cegueira", "baixa_visao", "surdez_profunda", "surdez_leve",
+          "fisica", "mental", "sindrome_down", "transtorno_mental")
+atribuir(paste0("ind_def_", inds, "_memb"), paste0("in_def_", inds, "_memb"),
+         "Indicador de deficiência; conferir domínio dos códigos no CadÚnico tratado")
+atribuir("cod_curso_frequentou_pessoa_memb", "co_curso_freq_pessoa_memb")
+atribuir("cod_trabalho_12_meses_memb", "co_trabalho_12_meses_memb")
+atribuir("qtd_meses_12_meses_memb", "qt_meses_12_meses_memb")
+atribuir("val_renda_bruta_12_meses_memb", "fx_renda_individual_808",
+         "Campo documentado como faixa de renda, não valor monetário em reais")
+atribuir("localizado_rais", "Derivada do cruzamento por CPF",
+         "S se CPF localizado em ao menos um vínculo da RAIS 2024")
+atribuir("vinculo_ativo_3112", "vinculo_ativo_31_12",
+         "1 = vínculo selecionado ativo em 31/12/2024")
+atribuir(c("tipo_vinculo", "tipo_admissao"), c("tipo_vinculo", "tipo_admissao"))
+atribuir("mes_admissao", "data_admissao", "Mês extraído da data de admissão")
+atribuir("tempo_emprego", "tempo_emprego", "Tempo de emprego em meses")
+atribuir("faixa_tempo_emprego", "tempo_emprego",
+         "Faixas: <3; 3–5,9; 6–11,9; 12–23,9; 24–35,9; 36–59,9; 60–119,9; 120+ meses")
+atribuir("valor_remuneracao_media", "vl_remun_media_nom", "Remuneração média nominal em reais")
+atribuir("remuneracao_media_sm", "vl_remun_media_sm", "Remuneração média em salários mínimos")
+atribuir("faixa_remuneracao_media_sm", "vl_remun_media_sm",
+         "Faixas em SM: até 0,5; 0,51–1; 1,01–1,5; 1,51–2; 2,01–3; 3,01–4; 4,01–5; 5,01–7; 7,01–10; 10,01–15; 15,01–20; >20")
+atribuir(c("cbo_1994", "cbo_2002"), c("cbo_94", "cbo_2002"))
+atribuir(c("cnae_1", "cnae_2"), c("cnae_95_classe", "cnae_20_classe"),
+         c("CNAE 1995 (classe)", "CNAE 2.0 (classe)"))
+atribuir("vl_renda_media_fam", "Parquet tratado da família (campo a confirmar)",
+         "Renda familiar per capita em reais; acrescentada em 09/10/2026; verificar regra de cálculo")
+atribuir("vl_renda_total_fam", "Parquet tratado da família (campo a confirmar)",
+         "Renda familiar total; acrescentada em 09/10/2026; verificar composição")
+atribuir("qt_membro_familia", "Parquet tratado da família (campo a confirmar)",
+         "Quantidade de membros; acrescentada em 09/10/2026; verificar definição")
+
+stopifnot(!anyDuplicated(mapa$variavel), nrow(mapa) == nrow(def))
+def <- merge(def, mapa, by = "variavel", all.x = TRUE, sort = FALSE)
+```
+
+## 4. Dicionário com todas as colunas encontradas
+
+```{r dicionario}
+dicionario <- merge(estrutura, def, by="variavel", all.x=TRUE, sort=FALSE)
+data.table::setorder(dicionario, ordem)
+dicionario[is.na(origem), origem := "A documentar"]
+dicionario[is.na(descricao), descricao := "A verificar no código gerador e na fonte oficial"]
+
+dicionario[, `:=`(
+  unidade_ou_dominio = NA_character_,
+  codigos_especiais = NA_character_,
+  regra_transformacao = NA_character_,
+  observacoes_validacao = NA_character_
+)]
+
+knitr::kable(dicionario[, .(ordem, variavel, tipo_duckdb, origem, campo_fonte, descricao, regra_ou_observacao)])
+cat("\nVariáveis encontradas sem definição:", sum(dicionario$origem == "A documentar"), "\n")
+```
+
+## 5. Divergências entre código/documentação e arquivo real
+
+```{r divergencias}
+nao_encontradas <- setdiff(def$variavel, estrutura$variavel)
+nao_documentadas <- setdiff(estrutura$variavel, def$variavel)
+
+cat("Previstas pelo script/documentação, mas ausentes no Parquet:\n")
+print(nao_encontradas)
+cat("\nPresentes no Parquet, mas ainda não descritas:\n")
+print(nao_documentadas)
+```
+
+## 6. Exportação do dicionário
+
+```{r exportacao}
+saida_dic <- file.path(pasta, "banco_beneficio_cad_rais_dicionario_revisao.csv")
+saida_estrutura <- file.path(pasta, "banco_beneficio_cad_rais_estrutura.csv")
+
+data.table::fwrite(dicionario, saida_dic, sep=";", bom=TRUE, na="")
+data.table::fwrite(estrutura, saida_estrutura, sep=";", bom=TRUE, na="")
+
+cat("Dicionário:", saida_dic, "\n")
+cat("Estrutura:", saida_estrutura, "\n")
+```
+
+## 7. Próximas auditorias (não executadas automaticamente)
+
+Após validar os nomes e definições, executar em etapas separadas: contagem de valores ausentes, domínios dos códigos, intervalos de datas, distribuição de remunerações, cardinalidade de NB/CPF, consistência entre renda total e per capita e verificação de possíveis duplicidades. Essas operações podem varrer os 15,7 milhões de registros e, por isso, não são incluídas na inspeção inicial.
+
+
+```{r}
+
+# Identificar os valores possíveis das quatro variáveis
+
+library(DBI)
+library(data.table)
+
+con <- dbConnect(
+  duckdb(),
+  dbdir = arq_db,
+  read_only = TRUE
+)
+
+# Listar tabelas disponíveis
+dbListTables(con)
+
+variaveis <- c(
+  "clientela_codigo",
+  "clientela",
+  "especie",
+  "especie_nome"
+)
+
+classificacoes <- lapply(variaveis, function(v) {
+
+  sql <- sprintf("
+    SELECT
+      CAST(%s AS VARCHAR) AS classificacao,
+      COUNT(*) AS n_beneficios,
+      ROUND(
+        100.0 * COUNT(*) / SUM(COUNT(*)) OVER (),
+        2
+      ) AS percentual
+    FROM tb_beneficio
+    GROUP BY %s
+    ORDER BY n_beneficios DESC
+  ", v, v)
+
+  resultado <- as.data.table(dbGetQuery(con, sql))
+  resultado[, variavel := v]
+
+  setcolorder(
+    resultado,
+    c("variavel", "classificacao", "n_beneficios", "percentual")
+  )
+
+  resultado
+})
+
+classificacoes <- rbindlist(classificacoes)
+
+print(classificacoes, nrows = Inf)
+
+# Identificar as combinações entre código e descrição
+
+combinacoes <- dbGetQuery(con, "
+  SELECT
+    especie,
+    especie_nome,
+    clientela_codigo,
+    clientela,
+    COUNT(*) AS n_beneficios,
+    ROUND(
+      100.0 * COUNT(*) /
+      SUM(COUNT(*)) OVER (PARTITION BY especie),
+      2
+    ) AS percentual_na_especie
+  FROM tb_beneficio
+  GROUP BY
+    especie,
+    especie_nome,
+    clientela_codigo,
+    clientela
+  ORDER BY
+    especie,
+    n_beneficios DESC
+")
+
+print(as.data.table(combinacoes), nrows = Inf)
+
+head_base <- dbGetQuery(con, "
+  SELECT *
+  FROM tb_beneficio
+  LIMIT 10
+")
+
+# Exibir as observações no console
+print(as.data.table(head_base))
+
+# Visualizar em formato de planilha no RStudio
+View(head_base)
+
+
+
+
+```
+
+```{r encerramento}
+DBI::dbDisconnect(con, shutdown=TRUE)
+```

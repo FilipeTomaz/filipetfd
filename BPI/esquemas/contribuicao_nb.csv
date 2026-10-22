@@ -1,0 +1,4 @@
+variavel,tipo_duckdb,papel,evidencia
+nb,VARCHAR,Chave única após deduplicação,06_extracao_concedidos_nb_cpf_contribuicao.Rmd:467–499
+cpf,VARCHAR,CPF normalizado; pode estar ausente,06_extracao_concedidos_nb_cpf_contribuicao.Rmd:467–499
+qt_anos_contribuicao,DOUBLE,Anos informados; zero difere de ausência,06_extracao_concedidos_nb_cpf_contribuicao.Rmd:467–499

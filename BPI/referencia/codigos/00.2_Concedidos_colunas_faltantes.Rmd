@@ -1,0 +1,494 @@
+---
+title: "Concedidos | Diagnóstico de variáveis de contribuição"
+subtitle: "Inventário dos arquivos originais e comparação com o DuckDB integrado"
+author: "Análise exploratória — etapa 1"
+date: "`r format(Sys.Date(), '%d/%m/%Y')`"
+output:
+  html_document:
+    theme: darkly
+    highlight: tango
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: true
+    code_folding: show
+    df_print: paged
+params:
+  dir_concedidos: "E:/01_Bases/09_PREVIDENCIA/04_Dados/Concedidos"
+  arq_duckdb: "E:/01_Bases/09_PREVIDENCIA/04_Dados/Saidas/banco_beneficio_cad_rais.duckdb"
+  tabela_duckdb: "tb_beneficio"
+  exportar_diagnosticos: false
+  dir_diagnosticos: "E:/01_Bases/09_PREVIDENCIA/04_Dados/Saidas/diagnostico_contribuicoes"
+---
+
+> **Objetivo:** verificar se os arquivos originais de **Concedidos** contêm variáveis de contribuição, carência e recolhimentos não incorporadas à base integrada Concedidos–CadÚnico–RAIS. Esta etapa **não lê registros de benefícios**, não executa cruzamentos e **não altera** o banco DuckDB existente. A extração dos dados será planejada somente depois de verificar os esquemas.
+
+> **Atenção conceitual:** em pensões por morte (espécie 21), a presença de uma variável chamada *tempo de contribuição* não estabelece, por si só, se ela se refere ao beneficiário da pensão ou ao instituidor falecido. Essa interpretação exige documentação da origem.
+
+# Preparação
+
+```{r configuracao, echo=TRUE, message=FALSE, warning=FALSE}
+# Pacotes necessários: install.packages(c("data.table", "DBI", "duckdb", "knitr", "rmarkdown"))
+library(data.table)
+library(DBI)
+library(duckdb)
+library(knitr)
+
+options(stringsAsFactors = FALSE)
+
+dir_conc <- params$dir_concedidos
+arq_db <- params$arq_duckdb
+nome_tabela <- params$tabela_duckdb
+
+stopifnot(dir.exists(dir_conc))
+
+# Apresentação de resultados agregados; nunca imprimir NB/CPF ou linhas individuais.
+mostrar_tabela <- function(x, digits = 2L) {
+  if (!nrow(x)) {
+    cat("*Nenhum registro encontrado para este diagnóstico.*\n\n")
+  } else {
+    print(knitr::kable(x, format = "html", digits = digits, row.names = FALSE))
+    cat("\n\n")
+  }
+}
+
+normalizar_nome <- function(x) {
+  x <- iconv(as.character(x), from = "", to = "ASCII//TRANSLIT", sub = "")
+  x <- tolower(x)
+  x[is.na(x)] <- ""
+  x
+}
+
+padrao_contrib <- "contrib|carencia|recolh|tempo.*servic|tempo.*contrib|salario.*contrib|meses.*pag|quant.*pag"
+
+cat("**Diretório de Concedidos:** `", dir_conc, "`\n\n", sep = "")
+cat("**Banco integrado (somente leitura):** `", arq_db, "`\n\n", sep = "")
+```
+
+# Inventário dos arquivos originais
+
+A etapa abaixo acessa apenas informações de sistema (nome, formato e tamanho). Pastas podem conter arquivos compactados ou outros formatos; eles são relacionados separadamente, mas não têm esquema inspecionado automaticamente.
+
+```{r inventario_arquivos, echo=TRUE, results='asis'}
+todos_arquivos <- list.files(
+  dir_conc,
+  recursive = TRUE,
+  full.names = TRUE,
+  all.files = FALSE,
+  include.dirs = FALSE
+)
+todos_arquivos <- todos_arquivos[file.exists(todos_arquivos) & !dir.exists(todos_arquivos)]
+
+if (!length(todos_arquivos)) {
+  stop("Não foram encontrados arquivos no diretório informado.")
+}
+
+inventario <- data.table(
+  caminho = normalizePath(todos_arquivos, winslash = "/", mustWork = FALSE),
+  arquivo = basename(todos_arquivos),
+  extensao = tolower(tools::file_ext(todos_arquivos)),
+  tamanho_gib = round(as.numeric(file.size(todos_arquivos)) / 1024^3, 4)
+)
+
+resumo_formatos <- inventario[, .(
+  n_arquivos = .N,
+  tamanho_total_gib = round(sum(tamanho_gib), 3)
+), by = extensao][order(-n_arquivos)]
+
+mostrar_tabela(resumo_formatos)
+cat("**Total de arquivos encontrados:** ", nrow(inventario), "\n\n", sep = "")
+
+# Tabela de nomes e tamanhos (sem informação individual de beneficiários)
+mostrar_tabela(inventario[, .(arquivo, extensao, tamanho_gib)])
+
+
+
+
+```
+
+# Inspeção das colunas originais
+
+Para arquivos **CSV**, a rotina lê somente o **cabeçalho** (`nrows = 0`), testando vírgula, ponto e vírgula e tabulação. Para **Parquet**, utiliza `DESCRIBE SELECT ... FROM read_parquet(...)`, sem materializar os registros. A codificação CSV padrão utilizada aqui é `latin1` (compatível para identificação de nomes acentuados em muitos arquivos CP1252); se aparecerem nomes corrompidos, verifique a codificação efetiva dos originais.
+
+```{r inspecao_esquemas, echo=TRUE, message=FALSE, results='asis'}
+library(data.table)
+library(DBI)
+library(duckdb)
+
+# ============================================================
+# CONFIGURAÇÕES
+# ============================================================
+
+# Quantidade máxima de arquivos por formato nesta inspeção
+# Use Inf para inspecionar todos depois de validar a rotina.
+max_arquivos_por_formato <- 5L
+
+# Ativar/desativar inspeção de Parquet
+incluir_parquet <- TRUE
+
+# ============================================================
+# 1. SELECIONAR ARQUIVOS
+# ============================================================
+
+arquivos_analise <- copy(
+  inventario[extensao %in% c("csv", "parquet")]
+)
+
+if (!incluir_parquet) {
+  arquivos_analise <- arquivos_analise[extensao == "csv"]
+}
+
+setorder(arquivos_analise, extensao, caminho)
+
+arquivos_analise <- arquivos_analise[
+  , head(.SD, max_arquivos_por_formato),
+  by = extensao
+]
+
+cat(
+  "Arquivos selecionados para inspeção:",
+  nrow(arquivos_analise), "\n\n"
+)
+
+# ============================================================
+# 2. LER APENAS A PRIMEIRA LINHA DOS CSVs
+# ============================================================
+
+ler_colunas_csv <- function(caminho) {
+
+  conexao <- file(
+    caminho,
+    open = "rt",
+    encoding = "latin1"
+  )
+
+  on.exit(close(conexao), add = TRUE)
+
+  # Lê somente a primeira linha do arquivo
+  cabecalho <- readLines(
+    conexao,
+    n = 1L,
+    warn = FALSE
+  )
+
+  if (!length(cabecalho)) {
+    stop("Arquivo vazio ou cabeçalho não encontrado")
+  }
+
+  # Corrigir possível marca BOM
+  cabecalho <- sub("^\ufeff", "", cabecalho)
+
+  # Testar separadores APENAS no texto do cabeçalho
+  separadores <- c(",", ";", "\t")
+
+  resultados <- lapply(separadores, function(sep) {
+
+    tryCatch({
+
+      conexao_texto <- textConnection(cabecalho)
+
+      resultado <- tryCatch(
+        names(read.table(
+          conexao_texto,
+          header = TRUE,
+          sep = sep,
+          nrows = 0L,
+          quote = "\"",
+          check.names = FALSE,
+          comment.char = "",
+          stringsAsFactors = FALSE
+        )),
+        finally = close(conexao_texto)
+      )
+
+      resultado
+
+    }, error = function(e) character())
+
+  })
+
+  quantidades <- lengths(resultados)
+
+  melhor <- which.max(quantidades)
+
+  if (!length(melhor) || quantidades[melhor] == 0L) {
+    stop("Não foi possível interpretar o cabeçalho")
+  }
+
+  list(
+    colunas = resultados[[melhor]],
+    separador = separadores[melhor]
+  )
+}
+
+# ============================================================
+# 3. METADADOS DOS PARQUETS
+# ============================================================
+
+# Abrir DuckDB somente quando existirem Parquets
+tem_parquet <- any(arquivos_analise$extensao == "parquet")
+
+con_meta <- NULL
+
+if (tem_parquet) {
+  con_meta <- DBI::dbConnect(duckdb::duckdb())
+}
+
+ler_colunas_parquet <- function(caminho) {
+
+  caminho_sql <- as.character(
+    DBI::dbQuoteString(con_meta, caminho)
+  )
+
+  sql <- sprintf(
+    "DESCRIBE SELECT * FROM read_parquet(%s)",
+    caminho_sql
+  )
+
+  DBI::dbGetQuery(con_meta, sql)$column_name
+}
+
+# ============================================================
+# 4. INSPEÇÃO DOS ARQUIVOS
+# ============================================================
+
+esquemas_lista <- vector(
+  "list",
+  nrow(arquivos_analise)
+)
+
+problemas_lista <- vector(
+  "list",
+  nrow(arquivos_analise)
+)
+
+for (i in seq_len(nrow(arquivos_analise))) {
+
+  caminho <- arquivos_analise$caminho[i]
+  ext     <- arquivos_analise$extensao[i]
+  nome    <- arquivos_analise$arquivo[i]
+
+  cat(
+    sprintf(
+      "[%d/%d] %s\n",
+      i,
+      nrow(arquivos_analise),
+      nome
+    )
+  )
+
+  flush.console()
+
+  tryCatch({
+
+    if (ext == "csv") {
+
+      info <- ler_colunas_csv(caminho)
+
+      colunas <- info$colunas
+
+      separador <- if (
+        info$separador == "\t"
+      ) "TAB" else info$separador
+
+    } else {
+
+      colunas <- ler_colunas_parquet(caminho)
+
+      separador <- NA_character_
+    }
+
+    esquemas_lista[[i]] <- data.table(
+      arquivo = nome,
+      caminho = caminho,
+      formato = ext,
+      separador_detectado = separador,
+      posicao_no_arquivo = seq_along(colunas),
+      campo_original = colunas
+    )
+
+  }, error = function(e) {
+
+    problemas_lista[[i]] <<- data.table(
+      arquivo = nome,
+      problema = conditionMessage(e)
+    )
+
+  })
+}
+
+# Procurar campos relacionados ao histórico contributivo
+
+campos_contribuicao <- colunas_originais[
+  grepl(
+    "contrib|car[eê]ncia|recolh|tempo.*servi",
+    campo_original,
+    ignore.case = TRUE
+  ),
+  .(
+    arquivo,
+    posicao_no_arquivo,
+    campo_original
+  )
+]
+
+mostrar_tabela(campos_contribuicao)
+```
+
+# Variáveis potencialmente relacionadas à contribuição
+
+A busca é **exploratória** e utiliza partes dos nomes das colunas, ignorando maiúsculas e, quando possível, acentos. Um resultado vazio significa apenas que os nomes não correspondem aos termos pesquisados; **não prova ausência de informação contributiva**.
+
+```{r variaveis_contribuicao, echo=TRUE, results='asis'}
+colunas_originais[, campo_normalizado := normalizar_nome(campo_original)]
+colunas_originais[, candidata_contribuicao := grepl(padrao_contrib, campo_normalizado)]
+
+campos_contrib <- unique(colunas_originais[
+  candidata_contribuicao == TRUE,
+  .(arquivo, posicao_no_arquivo, campo_original)
+])[order(campo_original, arquivo)]
+
+mostrar_tabela(campos_contrib)
+
+cat("**Quantidade de nomes de campos candidatos distintos:** ",
+    uniqueN(campos_contrib$campo_original), "\n\n", sep = "")
+```
+
+## Localizar a chave de ligação e a espécie
+
+Antes de extrair novas variáveis, precisamos identificar os nomes das colunas de **NB** e **espécie** nos arquivos originais. O código abaixo apresenta **somente nomes e posições**, não números de benefícios.
+
+```{r chave_e_especie, echo=TRUE, results='asis'}
+padrao_chaves <- "(^nb$|numero.*benefic|num.*benefic|^especie$|especie.*cod|cod.*especie)"
+campos_chaves <- unique(colunas_originais[
+  grepl(padrao_chaves, campo_normalizado),
+  .(arquivo, posicao_no_arquivo, campo_original)
+])[order(arquivo, posicao_no_arquivo)]
+
+mostrar_tabela(campos_chaves)
+```
+
+# Comparar com o DuckDB integrado
+
+A conexão é aberta com `read_only = TRUE`. A rotina verifica a existência do arquivo antes de se conectar, evitando criar um novo banco por engano.
+
+```{r comparar_duckdb, echo=TRUE, results='asis', message=FALSE}
+colunas_db <- data.table()
+problema_db <- NULL
+
+if (!file.exists(arq_db)) {
+  problema_db <- "O arquivo DuckDB informado não foi encontrado."
+} else {
+  con_db <- NULL
+  tryCatch({
+    con_db <- DBI::dbConnect(
+      duckdb::duckdb(),
+      dbdir = arq_db,
+      read_only = TRUE
+    )
+    tabelas <- DBI::dbListTables(con_db)
+    if (!(nome_tabela %in% tabelas)) {
+      problema_db <- paste0(
+        "Tabela '", nome_tabela,
+        "' não encontrada. Tabelas disponíveis: ",
+        paste(tabelas, collapse = ", ")
+      )
+    } else {
+      colunas_db <- data.table(
+        campo_duckdb = DBI::dbListFields(con_db, nome_tabela)
+      )
+      colunas_db[, campo_normalizado := normalizar_nome(campo_duckdb)]
+    }
+  }, error = function(e) {
+    problema_db <<- conditionMessage(e)
+  }, finally = {
+    if (!is.null(con_db)) {
+      try(DBI::dbDisconnect(con_db, shutdown = TRUE), silent = TRUE)
+    }
+  })
+}
+
+if (!is.null(problema_db)) {
+  cat("**Aviso sobre o DuckDB:** ", problema_db, "\n\n", sep = "")
+} else {
+  cat("**Total de campos no DuckDB:** ", nrow(colunas_db), "\n\n", sep = "")
+  cat("### Campos contributivos presentes no DuckDB\n\n")
+  mostrar_tabela(colunas_db[
+    grepl(padrao_contrib, campo_normalizado),
+    .(campo_duckdb)
+  ])
+}
+```
+
+## Candidatos encontrados nos originais e não encontrados no DuckDB
+
+A comparação abaixo considera o **nome normalizado**. Diferenças de nomenclatura entre a origem e o banco integrado podem produzir *falsos ausentes*; portanto, o resultado é uma lista de investigação, não prova de que a variável foi excluída.
+
+```{r candidatos_ausentes, echo=TRUE, results='asis'}
+if (nrow(colunas_db)) {
+  originais_candidatos <- unique(colunas_originais[
+    candidata_contribuicao,
+    .(campo_original, campo_normalizado)
+  ])
+
+  nomes_no_db <- unique(colunas_db$campo_normalizado)
+  candidatos_nao_encontrados <- originais_candidatos[
+    !campo_normalizado %in% nomes_no_db,
+    .(campo_original)
+  ][order(campo_original)]
+
+  mostrar_tabela(candidatos_nao_encontrados)
+} else {
+  cat("*Comparação não realizada: esquema do DuckDB indisponível.*\n\n")
+}
+```
+
+# Resumo da etapa e próximos passos
+
+```{r sintese_final, echo=FALSE, results='asis'}
+cat("- Arquivos localizados no diretório: **", nrow(inventario), "**.\n", sep = "")
+cat("- Arquivos CSV/Parquet identificados: **", nrow(arquivos_analise), "**.\n", sep = "")
+cat("- Arquivos com esquema inspecionado: **", uniqueN(colunas_originais$caminho), "**.\n", sep = "")
+cat("- Nomes distintos de campos candidatos: **", uniqueN(campos_contrib$campo_original), "**.\n", sep = "")
+cat("- Arquivos com erro de inspeção: **", nrow(problemas), "**.\n\n", sep = "")
+
+
+# Caminho do arquivo 
+arquivo <- "E:/01_Bases/09_PREVIDENCIA/04_Dados/Concedidos/concedidos_2026.csv" 
+# Ler o arquivo 
+
+library(data.table)
+
+dados <- fread(arquivo, nrows = 5)
+
+names(dados) <- iconv( names(dados), from = "UTF-8", to = "ASCII//TRANSLIT" ) 
+
+
+
+
+```
+
+**Próxima etapa proposta (não executada aqui):** depois de confirmar os nomes exatos dos campos e a chave NB, ler dos Concedidos **somente NB, espécie (se necessária) e as variáveis adicionais**; restringir às espécies 21, 41 e 88; padronizar a chave; verificar duplicidades e cobertura; construir um Parquet auxiliar; e, somente após validar a junção, produzir uma nova versão do banco integrado e do Parquet. **Não sobrescrever a versão atual.**
+
+# Exportação opcional de diagnósticos
+
+Por padrão, nenhuma saída é gravada. Caso deseje conservar as tabelas de metadados, altere o parâmetro `exportar_diagnosticos` para `true` no cabeçalho YAML do Rmd.
+
+```{r exportacao_opcional, echo=TRUE, results='asis'}
+if (isTRUE(params$exportar_diagnosticos)) {
+  dir.create(params$dir_diagnosticos, recursive = TRUE, showWarnings = FALSE)
+  fwrite(inventario, file.path(params$dir_diagnosticos, "inventario_arquivos.csv"))
+  fwrite(resumo_esquemas, file.path(params$dir_diagnosticos, "resumo_esquemas.csv"))
+  fwrite(campos_contrib, file.path(params$dir_diagnosticos, "campos_contribuicao.csv"))
+  fwrite(campos_chaves, file.path(params$dir_diagnosticos, "campos_chaves.csv"))
+  if (nrow(colunas_db)) {
+    fwrite(colunas_db[, .(campo_duckdb)], file.path(params$dir_diagnosticos, "campos_duckdb.csv"))
+  }
+  if (nrow(problemas)) {
+    fwrite(problemas, file.path(params$dir_diagnosticos, "erros_inspecao.csv"))
+  }
+  cat("*Tabelas de metadados exportadas para o diretório configurado.*\n\n")
+} else {
+  cat("*Exportação desativada: nenhum arquivo de diagnóstico foi gravado.*\n\n")
+}
+```

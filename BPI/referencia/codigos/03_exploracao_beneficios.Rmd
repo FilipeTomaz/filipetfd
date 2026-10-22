@@ -1,0 +1,177 @@
+---
+title: "Banco de benefícios — exploração inicial"
+subtitle: "Estrutura DuckDB, datas, idade e clientela"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    df_print: paged
+---
+
+Este roteiro consulta os dados sem modificar o banco original. Execute os chunks individualmente no RStudio. As consultas agregadas são realizadas no DuckDB; não se deve coletar toda a base no R.
+
+## 1. Conectar e inventariar o arquivo DuckDB
+
+```{r conexao-inventario}
+library(DBI)
+library(duckdb)
+library(dplyr)
+library(knitr)
+
+pasta <- "E:/01_Bases/09_PREVIDENCIA/04_Dados/Saidas"
+arq_db <- file.path(pasta, "banco_beneficio_cad_rais.duckdb")
+arq_parquet <- file.path(pasta, "banco_beneficio_cad_rais.parquet")
+stopifnot(file.exists(arq_db), file.exists(arq_parquet))
+
+# Abrir em modo somente leitura para proteger a base original
+con <- dbConnect(duckdb::duckdb(), dbdir = arq_db, read_only = TRUE)
+
+# Identificar tabelas e views em todos os schemas de usuario
+objetos_db <- dbGetQuery(con, "
+  SELECT table_catalog, table_schema, table_name, table_type
+  FROM information_schema.tables
+  WHERE table_schema NOT IN ('information_schema', 'pg_catalog')
+  ORDER BY table_schema, table_name
+")
+kable(objetos_db)
+
+# Conferir as colunas e os tipos da tabela principal
+estrutura_db <- dbGetQuery(con, "DESCRIBE SELECT * FROM tb_beneficio")
+kable(estrutura_db[, c('column_name', 'column_type')])
+
+# Comparar o esquema do DuckDB com o Parquet sem carregar os registros
+caminho_pq_sql <- gsub("'", "''", gsub('\\\\', '/', arq_parquet))
+estrutura_parquet <- dbGetQuery(con, sprintf(
+  "DESCRIBE SELECT * FROM read_parquet('%s')", caminho_pq_sql
+))
+comparacao <- merge(
+  estrutura_db[, c('column_name', 'column_type')],
+  estrutura_parquet[, c('column_name', 'column_type')],
+  by = 'column_name', all = TRUE, suffixes = c('_duckdb', '_parquet')
+)
+comparacao$mesmo_tipo <- with(comparacao,
+  !is.na(column_type_duckdb) & !is.na(column_type_parquet) &
+    column_type_duckdb == column_type_parquet)
+cat('Colunas no DuckDB:', nrow(estrutura_db), '\n')
+cat('Colunas no Parquet:', nrow(estrutura_parquet), '\n')
+print(comparacao[!comparacao$mesmo_tipo, ], row.names = FALSE)
+```
+
+## 2. Conferir o universo e explorar as variáveis de datas
+
+```{r universo-datas}
+# Contagens, cobertura de datas e extremos por especie
+resumo_datas <- dbGetQuery(con, "
+  SELECT especie, especie_nome,
+         COUNT(*) AS n_beneficios,
+         COUNT(*) FILTER (WHERE dt_nascimento IS NULL) AS sem_nascimento,
+         COUNT(*) FILTER (WHERE dt_der IS NULL) AS sem_der,
+         COUNT(*) FILTER (WHERE dt_ddb IS NULL) AS sem_ddb,
+         COUNT(*) FILTER (WHERE dt_dib IS NULL) AS sem_dib,
+         COUNT(*) FILTER (WHERE dt_dii IS NULL) AS sem_dii,
+         MIN(dt_der) AS primeira_der, MAX(dt_der) AS ultima_der,
+         MIN(dt_ddb) AS primeira_ddb, MAX(dt_ddb) AS ultima_ddb,
+         MIN(dt_dib) AS primeira_dib, MAX(dt_dib) AS ultima_dib
+  FROM tb_beneficio
+  GROUP BY especie, especie_nome
+  ORDER BY especie
+")
+kable(resumo_datas)
+
+# Examinar combinações e consistência cronológica sem trazer CPFs/NBs
+consistencia_datas <- dbGetQuery(con, "
+  SELECT especie,
+         COUNT(*) FILTER (WHERE dt_der IS NOT NULL AND dt_ddb IS NOT NULL) AS pares_der_ddb,
+         COUNT(*) FILTER (WHERE dt_ddb < dt_der) AS despacho_antes_pedido,
+         COUNT(*) FILTER (WHERE dt_dib < dt_der) AS inicio_antes_pedido,
+         COUNT(*) FILTER (WHERE dt_nascimento > dt_der) AS nascimento_apos_pedido,
+         COUNT(*) FILTER (WHERE dt_nascimento > dt_ddb) AS nascimento_apos_despacho
+  FROM tb_beneficio
+  GROUP BY especie ORDER BY especie
+")
+kable(consistencia_datas)
+```
+
+As datas anteriores ao requerimento não são necessariamente erros: por exemplo, a DIB pode ter efeito retroativo. A coluna DII tende a ser inaplicável às espécies estudadas.
+
+## 3. Idade na data do requerimento e do despacho
+
+```{r idades}
+# Calcular idade completa em anos, respeitando o aniversario
+idades <- dbGetQuery(con, "
+  WITH calc AS (
+    SELECT especie,
+      CASE WHEN dt_nascimento <= dt_der
+        THEN date_diff('year', dt_nascimento, dt_der) ELSE NULL END AS idade_der,
+      CASE WHEN dt_nascimento <= dt_ddb
+        THEN date_diff('year', dt_nascimento, dt_ddb) ELSE NULL END AS idade_ddb
+    FROM tb_beneficio
+  )
+  SELECT especie, COUNT(*) AS n,
+         COUNT(idade_der) AS com_idade_der,
+         ROUND(AVG(idade_der), 2) AS idade_media_der,
+         MEDIAN(idade_der) AS idade_mediana_der,
+         MIN(idade_der) AS idade_min_der,
+         MAX(idade_der) AS idade_max_der,
+         COUNT(*) FILTER (WHERE idade_der < 0 OR idade_der > 110) AS idade_der_suspeita,
+         ROUND(AVG(idade_ddb), 2) AS idade_media_ddb
+  FROM calc GROUP BY especie ORDER BY especie
+")
+kable(idades)
+```
+
+A idade no requerimento é mais adequada para investigar critérios etários na solicitação; a idade no despacho descreve a situação quando a decisão foi registrada. Valores extremos exigem inspeção adicional.
+
+## 4. Tempo entre requerimento, despacho e início do benefício
+
+```{r prazos}
+prazos <- dbGetQuery(con, "
+  WITH calc AS (
+    SELECT especie, year(dt_der) AS ano_requerimento,
+      date_diff('day', dt_der, dt_ddb) AS dias_der_ddb,
+      date_diff('day', dt_der, dt_dib) AS dias_der_dib
+    FROM tb_beneficio
+    WHERE dt_der IS NOT NULL
+  )
+  SELECT especie, ano_requerimento, COUNT(*) AS pedidos,
+         COUNT(dias_der_ddb) AS com_prazo_despacho,
+         COUNT(*) FILTER (WHERE dias_der_ddb < 0) AS prazo_negativo,
+         ROUND(AVG(dias_der_ddb) FILTER (WHERE dias_der_ddb >= 0), 1) AS media_dias,
+         MEDIAN(dias_der_ddb) FILTER (WHERE dias_der_ddb >= 0) AS mediana_dias,
+         QUANTILE_CONT(dias_der_ddb, 0.9) FILTER (WHERE dias_der_ddb >= 0) AS p90_dias,
+         COUNT(*) FILTER (WHERE dias_der_dib < 0) AS dib_anterior_der
+  FROM calc
+  GROUP BY especie, ano_requerimento
+  ORDER BY especie, ano_requerimento
+")
+kable(prazos)
+```
+
+A base reúne benefícios concedidos: portanto, os prazos calculados não representam todos os requerimentos feitos ao INSS, pois não incluem pedidos indeferidos ou ainda pendentes. Agrupar por ano do requerimento também pode introduzir truncamento para anos recentes.
+
+## 5. Clientela rural, urbana e valores não classificados
+
+```{r clientela}
+clientelas <- dbGetQuery(con, "
+  SELECT especie, clientela_codigo, clientela,
+         COUNT(*) AS n_beneficios,
+         ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (PARTITION BY especie), 2) AS pct_especie
+  FROM tb_beneficio
+  GROUP BY especie, clientela_codigo, clientela
+  ORDER BY especie, n_beneficios DESC
+")
+kable(clientelas)
+```
+
+A classificação rural deve ser validada primeiro pelos códigos e descrições efetivamente observados. Não confundir clientela rural do INSS com domicílio rural no CadÚnico (`cod_local_domici_fam = 2`).
+
+## 6. Próximos grupos de variáveis
+
+Após conferir os resultados anteriores, a exploração pode avançar para: espécie e despacho; sexo e localização; RMI em salários mínimos; cobertura e características do CadÚnico; renda familiar; e vínculo principal da RAIS 2024. Em todas as análises, distinguir o universo de benefícios concedidos do universo de pessoas distintas.
+
+
+
+```{r encerrar, eval=FALSE}
+# Executar somente ao terminar a sessao de analise
+DBI::dbDisconnect(con, shutdown = TRUE)
+```

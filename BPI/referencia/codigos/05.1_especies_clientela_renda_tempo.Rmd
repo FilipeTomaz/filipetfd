@@ -1,0 +1,764 @@
+---
+title: "Benefícios INSS — Pensão rural, CadÚnico, RAIS e anos de contribuição"
+author: "Análise exploratória"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: darkly
+    highlight: zenburn
+    df_print: kable
+---
+
+<style>
+/* Aparência do relatório HTML, sem alterar a renderização das tabelas */
+body { background-color: #1d2024; color: #e8e8e8; }
+pre:not(.sourceCode), pre code { color: #e8e8e8; background-color: #282c32; }
+.table { color: #e8e8e8; }
+.table > thead > tr > th { color: #ffffff; background-color: #303640; }
+.table > tbody > tr > td { color: #e8e8e8; background-color: #242930; }
+.table > tbody > tr:nth-child(odd) > td { background-color: #2d333b; }
+/* Evita cortar tabelas largas; rolagem no próprio documento */
+.main-container { max-width: 96% !important; }
+</style>
+
+
+
+Este relatório analisa os benefícios das espécies **21 (pensão por morte)**, **41 (aposentadoria por idade)** e **88 (BPC ao idoso)**, por clientela, com ênfase na **pensão rural** e na localização dos benefícios no **CadÚnico** e na **RAIS**. Incorpora a variável `qt_anos_contribuicao` (anos de contribuição), quando disponível na base integrada ou no banco auxiliar já extraído. As consultas são agregadas no DuckDB; NB e CPF individuais **não são exibidos** no relatório HTML. A tabela analítica temporária também não retém identificadores.
+
+**Referência temporal:** 31/12/2025. `dt_dib` representa o início do benefício, não a data de cessação. Assim, os indicadores de tempo abaixo medem o período **potencial decorrido desde a DIB**, não a duração efetiva de pagamentos ou a sobrevivência do beneficiário. Benefícios com DIB posterior à data de referência não entram nas estatísticas de tempo.
+
+## 1. Conexão e verificação das fontes
+
+```{r conexao, message=FALSE, warning=FALSE}
+library(DBI)
+library(duckdb)
+library(data.table)
+library(knitr)
+
+pasta <- "E:/01_Bases/09_PREVIDENCIA/04_Dados/Saidas"
+arq_parquet <- file.path(pasta, "banco_beneficio_cad_rais.parquet")
+arq_contrib_parquet <- file.path(pasta, "concedidos_nb_cpf_contribuicao_backup.parquet")
+arq_contrib_db <- file.path(pasta, "concedidos_nb_cpf_contribuicao_final.duckdb")
+data_referencia <- as.Date("2025-12-31")
+
+if (!file.exists(arq_parquet)) {
+  stop("Parquet integrado nao encontrado: ", arq_parquet)
+}
+
+# Banco de processamento em memoria: as tabelas de origem nao sao alteradas.
+con <- dbConnect(duckdb::duckdb(), dbdir = ":memory:")
+dbExecute(con, "SET preserve_insertion_order=false")
+
+dir_tmp <- file.path(pasta, "duckdb_tmp_analise_contrib")
+dir.create(dir_tmp, recursive = TRUE, showWarnings = FALSE)
+dbExecute(con, sprintf(
+  "SET temp_directory=%s",
+  as.character(dbQuoteString(con, normalizePath(dir_tmp, winslash="/", mustWork=TRUE)))
+))
+
+sql_pq <- as.character(dbQuoteString(
+  con, normalizePath(arq_parquet, winslash = "/", mustWork = TRUE)
+))
+dbExecute(con, sprintf(
+  "CREATE VIEW tb_beneficio_base AS SELECT * FROM read_parquet(%s)",
+  sql_pq
+))
+
+estrutura_base <- dbGetQuery(con, "DESCRIBE SELECT * FROM tb_beneficio_base")
+
+obrigatorias <- c(
+  "nb", "especie", "especie_nome", "clientela_codigo", "clientela",
+  "vl_rmi", "vl_rmi_convertido", "rmi_em_sm", "dt_ddb", "dt_dib",
+  "dt_der", "dt_nascimento", "localizado_cadunico", "localizado_rais",
+  "vl_renda_media_fam", "vl_renda_total_fam"
+)
+faltantes <- setdiff(obrigatorias, estrutura_base$column_name)
+if (length(faltantes)) stop("Colunas ausentes: ", paste(faltantes, collapse = ", "))
+
+# Se a coluna já estiver no Parquet integrado, não fazer JOIN novamente.
+# Caso contrário, utilizar os 60,7 milhões de NBs consolidados no auxiliar.
+if ("qt_anos_contribuicao" %in% estrutura_base$column_name) {
+  origem_contrib <- "Parquet integrado (variavel ja incorporada)"
+  dbExecute(con, "CREATE VIEW tb_beneficio AS SELECT * FROM tb_beneficio_base")
+} else {
+  if (file.exists(arq_contrib_parquet)) {
+    origem_contrib <- "Parquet auxiliar validado"
+    sql_aux <- as.character(dbQuoteString(
+      con, normalizePath(arq_contrib_parquet, winslash="/", mustWork=TRUE)
+    ))
+    dbExecute(con, sprintf(
+      paste0("CREATE VIEW tb_aux_contrib AS ",
+             "SELECT nb, qt_anos_contribuicao FROM read_parquet(%s)"),
+      sql_aux
+    ))
+  } else if (file.exists(arq_contrib_db)) {
+    origem_contrib <- "DuckDB auxiliar definitivo (somente leitura)"
+    sql_aux <- as.character(dbQuoteString(
+      con, normalizePath(arq_contrib_db, winslash="/", mustWork=TRUE)
+    ))
+    dbExecute(con, sprintf("ATTACH %s AS aux_contrib (READ_ONLY)", sql_aux))
+    dbExecute(con, paste0(
+      "CREATE VIEW tb_aux_contrib AS ",
+      "SELECT nb, qt_anos_contribuicao FROM aux_contrib.tb_contribuicao_nb"
+    ))
+  } else {
+    stop(paste0(
+      "qt_anos_contribuicao nao existe no Parquet integrado, ",
+      "e nenhuma fonte auxiliar foi encontrada. Verifique: ",
+      arq_contrib_parquet, " ou ", arq_contrib_db
+    ))
+  }
+
+  # Impede que um JOIN 1:N multiplique beneficios da base integrada.
+  ha_nb_duplicado <- dbGetQuery(con, "
+    SELECT EXISTS (
+      SELECT 1 FROM (
+        SELECT nb FROM tb_aux_contrib
+        WHERE nb IS NOT NULL
+        GROUP BY nb HAVING COUNT(*) > 1
+        LIMIT 1
+      ) d
+    ) AS existe
+  ")$existe[1]
+  if (isTRUE(ha_nb_duplicado)) {
+    stop("A fonte auxiliar possui NB duplicado; JOIN cancelado para evitar multiplicacao de linhas.")
+  }
+
+  dbExecute(con, "
+    CREATE VIEW tb_beneficio AS
+    SELECT b.*, c.qt_anos_contribuicao
+    FROM tb_beneficio_base b
+    LEFT JOIN tb_aux_contrib c ON b.nb = c.nb
+  ")
+}
+
+estrutura <- dbGetQuery(con, "DESCRIBE SELECT * FROM tb_beneficio")
+if (!("qt_anos_contribuicao" %in% estrutura$column_name)) {
+  stop("Coluna qt_anos_contribuicao nao foi incorporada.")
+}
+
+# Somente metadados; nenhuma linha individual de NB/CPF vai para o HTML.
+cat("**Fonte de contribuição:** ", origem_contrib, "\n\n", sep = "")
+cat("**Coluna disponível:** qt_anos_contribuicao\n\n")
+print(knitr::kable(
+  estrutura[estrutura$column_name %in% c("nb", "especie", "clientela", "qt_anos_contribuicao"),
+            c("column_name", "column_type")],
+  format = "html", row.names = FALSE
+))
+
+# Materializar apenas as colunas necessarias às analises, uma unica vez.
+# Evita refazer o JOIN com 60,7 milhoes de NBs a cada tabela do relatorio.
+# A tabela TEMP nao contém NB nem CPF e e descartada ao fechar a conexao.
+message("Preparando tabela analitica temporaria (especies 21, 41 e 88)...")
+dbExecute(con, "
+  CREATE TEMP TABLE tb_analise AS
+  SELECT
+    especie, especie_nome, clientela_codigo, clientela,
+    vl_rmi, vl_rmi_convertido, rmi_em_sm,
+    dt_ddb, dt_dib, dt_der, dt_nascimento,
+    localizado_cadunico, localizado_rais,
+    vl_renda_media_fam, vl_renda_total_fam,
+    TRY_CAST(qt_anos_contribuicao AS DOUBLE) AS qt_anos_contribuicao
+  FROM tb_beneficio
+  WHERE especie IN (21, 41, 88)
+")
+message("Tabela analitica temporaria pronta.")
+```
+
+## 2. Espécie e clientela: três tabelas
+
+As porcentagens de CadÚnico, RAIS e preenchimento dos anos de contribuição têm como denominador o total de benefícios de **cada combinação de espécie e clientela**. Datas mínimas e máximas representam os extremos observados, não o período de recebimento. A média de `vl_rmi_convertido` é exibida apenas para auditoria e **não deve ser comparada entre anos**, pois a documentação indica referências monetárias heterogêneas.
+
+```{r especie_clientela, results='asis'}
+sql_clientela <- "
+SELECT
+  especie, especie_nome, clientela_codigo, clientela,
+  COUNT(*) AS n_beneficios,
+  ROUND(AVG(vl_rmi), 2) AS vl_rmi_medio,
+  ROUND(AVG(vl_rmi_convertido), 2) AS vl_rmi_convertido_medio,
+  ROUND(AVG(rmi_em_sm), 3) AS rmi_media_sm,
+  MIN(dt_ddb) AS primeira_ddb,
+  MAX(dt_ddb) AS ultima_ddb,
+  MIN(dt_nascimento) AS nascimento_mais_antigo,
+  MAX(dt_nascimento) AS nascimento_mais_recente,
+  COUNT(*) FILTER (WHERE UPPER(TRIM(localizado_cadunico)) = 'S') AS n_cadunico,
+  ROUND(100.0 * COUNT(*) FILTER (WHERE UPPER(TRIM(localizado_cadunico)) = 'S')
+    / NULLIF(COUNT(*), 0), 2) AS pct_cadunico,
+  COUNT(*) FILTER (WHERE UPPER(TRIM(localizado_rais)) = 'S') AS n_rais,
+  ROUND(100.0 * COUNT(*) FILTER (WHERE UPPER(TRIM(localizado_rais)) = 'S')
+    / NULLIF(COUNT(*), 0), 2) AS pct_rais,
+  COUNT(qt_anos_contribuicao) AS n_anos_preenchidos,
+  ROUND(100.0 * COUNT(qt_anos_contribuicao) / NULLIF(COUNT(*), 0), 2) AS pct_anos_preenchidos,
+  ROUND(AVG(qt_anos_contribuicao), 2) AS anos_contrib_media,
+  ROUND(MEDIAN(qt_anos_contribuicao), 2) AS anos_contrib_mediana
+FROM tb_analise
+WHERE especie IN (21, 41, 88)
+GROUP BY especie, especie_nome, clientela_codigo, clientela
+ORDER BY especie, n_beneficios DESC
+"
+resultado <- as.data.table(dbGetQuery(con, sql_clientela))
+tabela_21 <- resultado[especie == 21]
+tabela_41 <- resultado[especie == 41]
+tabela_88 <- resultado[especie == 88]
+
+for (esp in c(21L, 41L, 88L)) {
+  cat(sprintf("\n### Espécie %d — %s\n\n", esp,
+              c(`21` = "Pensão por morte", `41` = "Aposentadoria por idade", `88` = "BPC ao idoso")[[as.character(esp)]]))
+  print(knitr::kable(resultado[especie == esp], digits = 2, format = "html"))
+  cat("\n\n")
+}
+```
+
+## 3. Análise de renda por espécie e clientela
+
+A renda previdenciária é medida pela **RMI na concessão** (`vl_rmi` e `rmi_em_sm`), não pelo valor pago em 2025. A RMI convertida é apresentada para inspeção, mas não deve ser comparada diretamente entre anos devido às referências monetárias heterogêneas. Também são exibidas as rendas familiares do CadÚnico de 2024, separadas da renda do benefício: **não representam a renda familiar na concessão** e podem incluir o próprio benefício.
+
+```{r analise_renda, results='asis'}
+sql_renda <- "
+SELECT
+  especie, especie_nome, clientela_codigo, clientela,
+  COUNT(*) AS n_beneficios,
+  COUNT(vl_rmi) AS n_rmi_preenchida,
+  ROUND(AVG(vl_rmi), 2) AS rmi_nominal_media,
+  ROUND(MEDIAN(vl_rmi), 2) AS rmi_nominal_mediana,
+  ROUND(AVG(vl_rmi_convertido), 2) AS rmi_convertida_media,
+  ROUND(AVG(rmi_em_sm), 3) AS rmi_media_sm,
+  ROUND(MEDIAN(rmi_em_sm), 3) AS rmi_mediana_sm,
+  COUNT(rmi_em_sm) AS n_rmi_sm_preenchida,
+  COUNT(vl_renda_media_fam) AS n_renda_familiar_preenchida,
+  ROUND(AVG(vl_renda_media_fam), 2) AS renda_familiar_media_cad_2024,
+  ROUND(MEDIAN(vl_renda_media_fam), 2) AS renda_familiar_mediana_cad_2024,
+  ROUND(AVG(vl_renda_total_fam), 2) AS renda_familiar_total_media_cad_2024
+FROM tb_analise
+WHERE especie IN (21, 41, 88)
+GROUP BY especie, especie_nome, clientela_codigo, clientela
+ORDER BY especie, n_beneficios DESC
+"
+renda <- as.data.table(dbGetQuery(con, sql_renda))
+renda_21 <- renda[especie == 21]
+renda_41 <- renda[especie == 41]
+renda_88 <- renda[especie == 88]
+
+for (esp in c(21L, 41L, 88L)) {
+  cat(sprintf("\n### Espécie %d — Renda\n\n", esp))
+  print(knitr::kable(renda[especie == esp], digits = 2, format = "html"))
+  cat("\n\n")
+}
+```
+
+## 4. Tempo potencial de usufruto até 31/12/2025
+
+O tempo é calculado desde `dt_dib` até **31/12/2025**, exclusivamente para benefícios cuja DIB é válida e não posterior à data de referência. **Sem a data de cessação, o indicador é um limite temporal potencial, não a duração efetiva do recebimento.** O cálculo não permite determinar se o benefício estava ativo em 31/12/2025.
+
+Além do tempo potencial, são apresentadas a idade na DDB e a diferença entre DER e DDB (prazo decorrido até o despacho), que são indicadores distintos do tempo de usufruto.
+
+```{r analise_tempo, results='asis'}
+ref_sql <- format(data_referencia, "%Y-%m-%d")
+sql_tempo <- sprintf("
+WITH dados AS (
+  SELECT
+    especie, especie_nome, clientela_codigo, clientela,
+    dt_dib, dt_ddb, dt_der, dt_nascimento,
+    CASE WHEN dt_dib BETWEEN DATE '1900-01-01' AND DATE '%s'
+         THEN date_diff('day', dt_dib, DATE '%s') END AS dias_desde_dib,
+    CASE WHEN dt_nascimento BETWEEN DATE '1900-01-01' AND dt_ddb
+         THEN date_diff('year', dt_nascimento, dt_ddb)
+              - CASE WHEN strftime(dt_ddb, '%%m%%d') < strftime(dt_nascimento, '%%m%%d')
+                     THEN 1 ELSE 0 END
+         END AS idade_na_ddb,
+    CASE WHEN dt_der IS NOT NULL AND dt_ddb IS NOT NULL
+              AND dt_ddb >= dt_der
+         THEN date_diff('day', dt_der, dt_ddb) END AS dias_der_ddb
+  FROM tb_analise
+  WHERE especie IN (21, 41, 88)
+)
+SELECT
+  especie, especie_nome, clientela_codigo, clientela,
+  COUNT(*) AS n_beneficios,
+  COUNT(dias_desde_dib) AS n_dib_valida_ate_2025,
+  COUNT(*) - COUNT(dias_desde_dib) AS n_dib_ausente_invalida_ou_futura,
+  ROUND(100.0 * COUNT(dias_desde_dib) / NULLIF(COUNT(*), 0), 2) AS pct_dib_valida,
+  ROUND(AVG(dias_desde_dib) / 365.2425, 2) AS anos_potenciais_medios,
+  ROUND(MEDIAN(dias_desde_dib) / 365.2425, 2) AS anos_potenciais_medianos,
+  ROUND(MIN(dias_desde_dib) / 365.2425, 2) AS anos_potenciais_minimos,
+  ROUND(MAX(dias_desde_dib) / 365.2425, 2) AS anos_potenciais_maximos,
+  ROUND(AVG(idade_na_ddb), 1) AS idade_media_na_ddb,
+  ROUND(MEDIAN(idade_na_ddb), 1) AS idade_mediana_na_ddb,
+  ROUND(AVG(dias_der_ddb), 1) AS dias_medios_der_ate_ddb,
+  ROUND(MEDIAN(dias_der_ddb), 1) AS dias_medianos_der_ate_ddb
+FROM dados
+GROUP BY especie, especie_nome, clientela_codigo, clientela
+ORDER BY especie, n_beneficios DESC
+", ref_sql, ref_sql)
+
+tempo <- as.data.table(dbGetQuery(con, sql_tempo))
+tempo_21 <- tempo[especie == 21]
+tempo_41 <- tempo[especie == 41]
+tempo_88 <- tempo[especie == 88]
+
+for (esp in c(21L, 41L, 88L)) {
+  cat(sprintf("\n### Espécie %d — Tempo potencial até 31/12/2025\n\n", esp))
+  print(knitr::kable(tempo[especie == esp], digits = 2, format = "html"))
+  cat("\n\n")
+}
+```
+
+## 5. Anos de contribuição: comparação entre pensões e BPC
+
+`qt_anos_contribuicao` é expressa em **anos**, não em meses nem na quantidade de vínculos registrados na RAIS. O BPC é assistencial e **não pressupõe histórico contributivo**. Na espécie 21, é necessário validar a documentação da origem para determinar se a contagem se refere ao instituidor falecido ou ao beneficiário da pensão; **não interpretar automaticamente como contribuições do pensionista**.
+
+Os indicadores abaixo usam apenas valores não nulos. Os percentuais de preenchimento têm como denominador **todos os benefícios** de cada grupo; médias, medianas e quartis usam somente os registros com contribuição informada. Valores negativos ou superiores a 80 anos são exibidos em auditoria e **não são descartados silenciosamente**.
+
+```{r contribuicao_comparativo, results='asis'}
+sql_contribuicao <- "
+SELECT
+  especie, especie_nome, clientela_codigo, clientela,
+  COUNT(*) AS n_beneficios,
+  COUNT(qt_anos_contribuicao) AS n_com_contribuicao,
+  COUNT(*) - COUNT(qt_anos_contribuicao) AS n_sem_contribuicao_informada,
+  ROUND(100.0 * COUNT(qt_anos_contribuicao) / NULLIF(COUNT(*), 0), 2)
+    AS pct_contribuicao_informada,
+  ROUND(AVG(qt_anos_contribuicao), 2) AS anos_medios,
+  ROUND(MEDIAN(qt_anos_contribuicao), 2) AS anos_medianos,
+  ROUND(QUANTILE_CONT(qt_anos_contribuicao, 0.25), 2) AS p25_anos,
+  ROUND(QUANTILE_CONT(qt_anos_contribuicao, 0.75), 2) AS p75_anos,
+  ROUND(100.0 * COUNT(*) FILTER (WHERE qt_anos_contribuicao >= 15)
+      / NULLIF(COUNT(qt_anos_contribuicao), 0), 2) AS pct_15_anos_entre_informados,
+  ROUND(100.0 * COUNT(*) FILTER (WHERE qt_anos_contribuicao >= 30)
+      / NULLIF(COUNT(qt_anos_contribuicao), 0), 2) AS pct_30_anos_entre_informados,
+  COUNT(*) FILTER (WHERE qt_anos_contribuicao < 0) AS anos_negativos,
+  COUNT(*) FILTER (WHERE qt_anos_contribuicao > 80) AS anos_acima_80
+FROM tb_analise
+WHERE especie IN (21, 41, 88)
+GROUP BY especie, especie_nome, clientela_codigo, clientela
+ORDER BY especie, n_beneficios DESC
+"
+contribuicao <- as.data.table(dbGetQuery(con, sql_contribuicao))
+for (esp in c(21L, 41L, 88L)) {
+  cat(sprintf("\n### Espécie %d — contribuição\n\n", esp))
+  print(knitr::kable(
+    contribuicao[especie == esp], digits = 2,
+    format = "html", row.names = FALSE
+  ))
+  cat("\n\n")
+}
+```
+
+### 5.1. Pensão rural, pensão urbana e BPC ao idoso
+
+Comparação focal: **pensão rural (espécie 21, clientela rural)** versus **pensão urbana (21, urbana)** e **BPC ao idoso (88, todas as clientelas)**. O BPC é mostrado agregado sem duplicar as duas clientelas. Todos os indicadores dizem respeito a **benefícios**, e não a pessoas distintas.
+
+```{r contribuicao_grupos, results='asis'}
+sql_grupos <- "
+WITH grupos AS (
+  SELECT
+    CASE
+      WHEN especie = 21 AND clientela_codigo = '2' THEN 'Pensão rural'
+      WHEN especie = 21 AND clientela_codigo = '1' THEN 'Pensão urbana'
+      WHEN especie = 88 THEN 'BPC ao idoso (total)'
+    END AS grupo,
+    qt_anos_contribuicao,
+    localizado_cadunico,
+    localizado_rais
+  FROM tb_analise
+  WHERE (especie = 21 AND clientela_codigo IN ('1','2')) OR especie = 88
+)
+SELECT
+  grupo,
+  COUNT(*) AS n_beneficios,
+  COUNT(*) FILTER (WHERE UPPER(TRIM(localizado_cadunico)) = 'S') AS n_cadunico,
+  ROUND(100.0 * COUNT(*) FILTER (WHERE UPPER(TRIM(localizado_cadunico)) = 'S')
+        / NULLIF(COUNT(*),0), 2) AS pct_cadunico,
+  COUNT(*) FILTER (WHERE UPPER(TRIM(localizado_rais)) = 'S') AS n_rais,
+  ROUND(100.0 * COUNT(*) FILTER (WHERE UPPER(TRIM(localizado_rais)) = 'S')
+        / NULLIF(COUNT(*),0), 2) AS pct_rais,
+  COUNT(*) FILTER (WHERE UPPER(TRIM(localizado_cadunico)) = 'S'
+                     AND UPPER(TRIM(localizado_rais)) = 'S') AS n_cadunico_e_rais,
+  COUNT(qt_anos_contribuicao) AS n_anos_preenchidos,
+  ROUND(100.0 * COUNT(qt_anos_contribuicao) / NULLIF(COUNT(*),0),2)
+    AS pct_anos_preenchidos,
+  ROUND(AVG(qt_anos_contribuicao),2) AS anos_medios,
+  ROUND(MEDIAN(qt_anos_contribuicao),2) AS anos_medianos
+FROM grupos WHERE grupo IS NOT NULL
+GROUP BY grupo
+ORDER BY CASE grupo
+    WHEN 'Pensão rural' THEN 1
+    WHEN 'Pensão urbana' THEN 2
+    ELSE 3 END
+"
+comparacao <- as.data.table(dbGetQuery(con, sql_grupos))
+print(knitr::kable(comparacao, digits=2, format="html", row.names=FALSE))
+```
+
+### 5.2. Pensão rural: anos de contribuição por situação no CadÚnico e na RAIS
+
+Aqui é possível identificar a **interseção efetiva** entre os dois cadastros, em vez de somar percentuais independentes. A categoria "Não localizado" significa apenas que não houve correspondência na integração utilizada; **não prova inexistência de vínculo empregatício ou ausência cadastral em qualquer período**.
+
+```{r contribuicao_cad_rais, results='asis'}
+sql_cr <- "
+WITH base AS (
+ SELECT
+   CASE WHEN UPPER(TRIM(localizado_cadunico)) = 'S'
+        THEN 'Localizado' ELSE 'Não localizado' END AS cadunico,
+   CASE WHEN UPPER(TRIM(localizado_rais)) = 'S'
+        THEN 'Localizado' ELSE 'Não localizado' END AS rais,
+   qt_anos_contribuicao
+ FROM tb_analise
+ WHERE especie = 21 AND clientela_codigo = '2'
+)
+SELECT
+  cadunico, rais,
+  COUNT(*) AS n_beneficios,
+  ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) AS pct_pensao_rural,
+  COUNT(qt_anos_contribuicao) AS n_anos_preenchidos,
+  ROUND(100.0 * COUNT(qt_anos_contribuicao) / NULLIF(COUNT(*),0),2)
+    AS pct_anos_preenchidos,
+  ROUND(AVG(qt_anos_contribuicao),2) AS anos_medios,
+  ROUND(MEDIAN(qt_anos_contribuicao),2) AS anos_medianos,
+  ROUND(QUANTILE_CONT(qt_anos_contribuicao,0.25),2) AS p25_anos,
+  ROUND(QUANTILE_CONT(qt_anos_contribuicao,0.75),2) AS p75_anos
+FROM base
+GROUP BY cadunico, rais
+ORDER BY cadunico DESC, rais DESC
+"
+cad_rais_contrib <- as.data.table(dbGetQuery(con, sql_cr))
+print(knitr::kable(
+  cad_rais_contrib, digits=2, format="html", row.names=FALSE
+))
+```
+
+
+```{r}
+
+```{r cruzamento_cadunico_rais_tres_especies, results='asis'}
+
+# ============================================================
+# CADUNICO x RAIS — ESPECIES 88, 41 E 21
+# Separacao por especie e clientela (rural / urbana)
+# ============================================================
+
+sql_cr_especies <- "
+WITH base AS (
+  SELECT
+    especie,
+    clientela_codigo,
+    clientela,
+
+    CASE
+      WHEN UPPER(TRIM(localizado_cadunico)) = 'S'
+        THEN 'S'
+      WHEN UPPER(TRIM(localizado_cadunico)) = 'N'
+        THEN 'N'
+      ELSE '?'
+    END AS cad,
+
+    CASE
+      WHEN UPPER(TRIM(localizado_rais)) = 'S'
+        THEN 'S'
+      WHEN UPPER(TRIM(localizado_rais)) = 'N'
+        THEN 'N'
+      ELSE '?'
+    END AS rais
+
+  FROM tb_analise
+
+  WHERE especie IN (21, 41, 88)
+    AND clientela_codigo IN ('1', '2')
+),
+
+classificacao AS (
+  SELECT
+    *,
+    CASE
+      WHEN cad = 'S' AND rais = 'S'
+        THEN 'CadUnico e RAIS'
+      WHEN cad = 'S' AND rais = 'N'
+        THEN 'Somente CadUnico'
+      WHEN cad = 'N' AND rais = 'S'
+        THEN 'Somente RAIS'
+      WHEN cad = 'N' AND rais = 'N'
+        THEN 'Nenhuma das duas'
+      ELSE 'Classificacao indeterminada'
+    END AS situacao
+  FROM base
+),
+
+contagens AS (
+  SELECT
+    especie,
+    clientela_codigo,
+    clientela,
+
+    COUNT(*) AS n_beneficios,
+
+    COUNT(*) FILTER (
+      WHERE cad = 'S'
+    ) AS n_cadunico,
+
+    COUNT(*) FILTER (
+      WHERE rais = 'S'
+    ) AS n_rais,
+
+    COUNT(*) FILTER (
+      WHERE situacao = 'CadUnico e RAIS'
+    ) AS n_ambos,
+
+    COUNT(*) FILTER (
+      WHERE situacao = 'Somente CadUnico'
+    ) AS n_so_cadunico,
+
+    COUNT(*) FILTER (
+      WHERE situacao = 'Somente RAIS'
+    ) AS n_so_rais,
+
+    COUNT(*) FILTER (
+      WHERE situacao = 'Nenhuma das duas'
+    ) AS n_nenhum,
+
+    COUNT(*) FILTER (
+      WHERE situacao = 'Classificacao indeterminada'
+    ) AS n_indeterminado
+
+  FROM classificacao
+
+  GROUP BY
+    especie,
+    clientela_codigo,
+    clientela
+)
+
+SELECT
+  *,
+
+  ROUND(
+    100.0 * n_cadunico / NULLIF(n_beneficios, 0),
+    2
+  ) AS pct_cadunico,
+
+  ROUND(
+    100.0 * n_rais / NULLIF(n_beneficios, 0),
+    2
+  ) AS pct_rais,
+
+  ROUND(
+    100.0 * n_ambos / NULLIF(n_beneficios, 0),
+    2
+  ) AS pct_ambos,
+
+  ROUND(
+    100.0 * n_so_cadunico / NULLIF(n_beneficios, 0),
+    2
+  ) AS pct_so_cadunico,
+
+  ROUND(
+    100.0 * n_so_rais / NULLIF(n_beneficios, 0),
+    2
+  ) AS pct_so_rais,
+
+  ROUND(
+    100.0 * n_nenhum / NULLIF(n_beneficios, 0),
+    2
+  ) AS pct_nenhum,
+
+  ROUND(
+    100.0 * n_indeterminado / NULLIF(n_beneficios, 0),
+    2
+  ) AS pct_indeterminado
+
+FROM contagens
+
+ORDER BY
+  CASE especie
+    WHEN 88 THEN 1
+    WHEN 41 THEN 2
+    WHEN 21 THEN 3
+  END,
+  clientela_codigo
+"
+
+cr_especies <- data.table::as.data.table(
+  DBI::dbGetQuery(con, sql_cr_especies)
+)
+
+# Verificar se as categorias exclusivas somam o total
+stopifnot(all(
+  cr_especies$n_beneficios ==
+    cr_especies$n_ambos +
+    cr_especies$n_so_cadunico +
+    cr_especies$n_so_rais +
+    cr_especies$n_nenhum +
+    cr_especies$n_indeterminado
+))
+
+# ============================================================
+# APRESENTAR SEPARADAMENTE AS TRES ESPECIES
+# ============================================================
+
+nomes_especies <- c(
+  `88` = "BPC ao idoso",
+  `41` = "Aposentadoria por idade",
+  `21` = "Pensao por morte"
+)
+
+for (esp in c(88L, 41L, 21L)) {
+
+  dados <- cr_especies[especie == esp]
+
+  cat(
+    "\n### Especie ", esp, " — ",
+    nomes_especies[as.character(esp)],
+    "\n\n",
+    sep = ""
+  )
+
+  # Tabela 1: totais localizados em cada base
+  cat("**Localizacao nas bases**\n\n")
+
+  print(knitr::kable(
+    dados[, .(
+      clientela,
+      n_beneficios,
+      n_cadunico,
+      pct_cadunico,
+      n_rais,
+      pct_rais
+    )],
+    digits = 2,
+    format = "html",
+    row.names = FALSE
+  ))
+
+  cat("\n\n")
+
+  # Tabela 2: quatro grupos exclusivos e indeterminados
+  cat("**Intersecao CadUnico x RAIS**\n\n")
+
+  print(knitr::kable(
+    dados[, .(
+      clientela,
+      n_ambos,
+      pct_ambos,
+      n_so_cadunico,
+      pct_so_cadunico,
+      n_so_rais,
+      pct_so_rais,
+      n_nenhum,
+      pct_nenhum,
+      n_indeterminado
+    )],
+    digits = 2,
+    format = "html",
+    row.names = FALSE
+  ))
+
+  cat("\n\n")
+}
+```
+
+```
+
+### 5.3. Distribuição dos anos de contribuição
+
+Faixas calculadas sobre **todos os registros de cada grupo**, incluindo explicitamente "Sem informação"; os percentuais têm como denominador o total do grupo.
+
+```{r distribuicao_contribuicao, results='asis'}
+sql_faixas <- "
+WITH grupos AS (
+ SELECT
+   CASE WHEN especie=21 AND clientela_codigo='2' THEN 'Pensão rural'
+        WHEN especie=21 AND clientela_codigo='1' THEN 'Pensão urbana'
+        WHEN especie=88 THEN 'BPC ao idoso (total)' END AS grupo,
+   CASE
+     WHEN qt_anos_contribuicao IS NULL THEN 'Sem informação'
+     WHEN qt_anos_contribuicao < 0 THEN 'Valor negativo (auditar)'
+     WHEN qt_anos_contribuicao = 0 THEN '0 ano'
+     WHEN qt_anos_contribuicao < 5 THEN 'Acima de 0 e abaixo de 5'
+     WHEN qt_anos_contribuicao < 10 THEN '5 a menos de 10'
+     WHEN qt_anos_contribuicao < 20 THEN '10 a menos de 20'
+     WHEN qt_anos_contribuicao < 30 THEN '20 a menos de 30'
+     WHEN qt_anos_contribuicao < 40 THEN '30 a menos de 40'
+     ELSE '40 anos ou mais'
+   END AS faixa,
+   CASE
+     WHEN qt_anos_contribuicao IS NULL THEN 0
+     WHEN qt_anos_contribuicao < 0 THEN 1
+     WHEN qt_anos_contribuicao = 0 THEN 2
+     WHEN qt_anos_contribuicao < 5 THEN 3
+     WHEN qt_anos_contribuicao < 10 THEN 4
+     WHEN qt_anos_contribuicao < 20 THEN 5
+     WHEN qt_anos_contribuicao < 30 THEN 6
+     WHEN qt_anos_contribuicao < 40 THEN 7
+     ELSE 8 END AS ordem
+ FROM tb_analise
+ WHERE (especie=21 AND clientela_codigo IN ('1','2')) OR especie=88
+), contagens AS (
+ SELECT grupo, faixa, ordem, COUNT(*) AS n
+ FROM grupos WHERE grupo IS NOT NULL
+ GROUP BY grupo, faixa, ordem
+)
+SELECT grupo, faixa, n AS n_beneficios,
+ ROUND(100.0 * n / SUM(n) OVER (PARTITION BY grupo),2) AS pct_grupo
+FROM contagens
+ORDER BY CASE grupo
+    WHEN 'Pensão rural' THEN 1
+    WHEN 'Pensão urbana' THEN 2 ELSE 3 END,
+  ordem
+"
+faixas_contrib <- as.data.table(dbGetQuery(con, sql_faixas))
+print(knitr::kable(faixas_contrib, digits=2, format="html", row.names=FALSE))
+```
+
+## 6. Conferência das datas e registros potencialmente inconsistentes
+
+```{r consistencia_datas}
+consistencia <- dbGetQuery(con, sprintf("
+SELECT
+  especie,
+  COUNT(*) AS n,
+  COUNT(*) FILTER (WHERE dt_dib IS NULL) AS sem_dib,
+  COUNT(*) FILTER (WHERE dt_dib > DATE '%s') AS dib_posterior_referencia,
+  COUNT(*) FILTER (WHERE dt_der IS NULL) AS sem_der,
+  COUNT(*) FILTER (WHERE dt_ddb IS NULL) AS sem_ddb,
+  COUNT(*) FILTER (WHERE dt_nascimento IS NULL) AS sem_nascimento,
+  COUNT(*) FILTER (WHERE dt_ddb < dt_der) AS despacho_antes_requerimento,
+  COUNT(*) FILTER (WHERE dt_nascimento > dt_ddb) AS nascimento_apos_despacho
+FROM tb_analise
+WHERE especie IN (21, 41, 88)
+GROUP BY especie
+ORDER BY especie
+", ref_sql))
+knitr::kable(consistencia)
+```
+
+## 7. Exportar resultados agregados
+
+```{r exportacao, eval=FALSE}
+# Descomente eval=TRUE para gravar apenas tabelas agregadas (sem CPF ou NB).
+fwrite(resultado, file.path(pasta, "resumo_especie_clientela.csv"), sep = ";", bom = TRUE)
+fwrite(renda, file.path(pasta, "resumo_renda_especie_clientela.csv"), sep = ";", bom = TRUE)
+fwrite(tempo, file.path(pasta, "resumo_tempo_potencial_ate_2025.csv"), sep = ";", bom = TRUE)
+fwrite(as.data.table(consistencia), file.path(pasta, "consistencia_datas_especies.csv"), sep = ";", bom = TRUE)
+fwrite(contribuicao, file.path(pasta, "resumo_anos_contribuicao.csv"), sep = ";", bom = TRUE)
+fwrite(comparacao, file.path(pasta, "comparacao_pensao_rural_urbana_bpc_contrib.csv"), sep = ";", bom = TRUE)
+fwrite(cad_rais_contrib, file.path(pasta, "pensao_rural_contrib_cadunico_rais.csv"), sep = ";", bom = TRUE)
+fwrite(faixas_contrib, file.path(pasta, "faixas_anos_contribuicao.csv"), sep = ";", bom = TRUE)
+```
+
+## Notas de interpretação
+
+- **Não há variável de cessação** nas colunas analisadas. Portanto, `anos_potenciais_medios` não é duração efetiva de usufruto nem comprovação de que o benefício estava ativo em 2025.
+- A data de referência 31/12/2025 é um marco analítico solicitado, não prova de que a base contém informações completas até esse dia.
+- A renda familiar do CadÚnico corresponde à fotografia de 2024 e é exibida em colunas próprias, sem ser somada à RMI.
+- `vl_rmi_convertido` consta na primeira análise por fidelidade à solicitação, mas a comparação intertemporal deve privilegiar `rmi_em_sm`.
+- Os percentuais de localização no CadÚnico e na RAIS são percentuais de **benefícios**, não de CPFs distintos.
+
+- `qt_anos_contribuicao` não foi criada a partir da RAIS; vem dos Concedidos e foi ligada por **NB** quando ausente no Parquet integrado. Não confundir ausência de informação com zero anos.
+- Na **pensão por morte**, é necessário verificar a quem se refere o histórico contributivo no registro de origem antes de atribuí-lo ao pensionista. No **BPC**, a concessão não depende de contribuições previdenciárias.
+- A interseção CadÚnico × RAIS é calculada registro a registro no DuckDB, sem expor identificadores; ainda assim, trata-se de vínculos encontrados no cruzamento disponível, sem garantia de contemporaneidade.
+- O arquivo `concedidos_nb_cpf_contribuicao_backup.parquet` contém identificadores sensíveis, embora este relatório exiba somente resultados agregados.
+
+```{r fechamento_conexao, include=FALSE}
+DBI::dbDisconnect(con, shutdown=TRUE)
+```

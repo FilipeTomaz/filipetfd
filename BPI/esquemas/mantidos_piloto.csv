@@ -1,0 +1,13 @@
+variavel_logica,posicao_csv,tipo_bruto,observacao
+indicador_cessacao,2,VARCHAR,Não determina sozinho a situação
+competencia_dcb,5,VARCHAR,Não confundir com data de referência analítica
+grupo_situacao,14,VARCHAR,Manter valor e descrição originais
+motivo_cessacao_codigo,15,VARCHAR,Preservar zeros à esquerda
+motivo_cessacao_nome,16,VARCHAR,Descrição associada ao código
+nb,19,VARCHAR,Chave para Concedidos
+situacao_codigo,31,VARCHAR,Preservar zeros à esquerda
+situacao_nome,32,VARCHAR,"Distinguir ativo, cessado e suspenso"
+duracao_informada_dias,39,VARCHAR,Comparar com DCB menos DIB
+data_cessacao,44,VARCHAR,DDMMAAAA com sentinelas possíveis
+data_inicio,47,VARCHAR,DDMMAAAA
+ultima_macica,51,VARCHAR,Não prova competência de extração

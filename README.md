@@ -75,3 +75,9 @@ percentual e parâmetros comuns são editáveis no YAML. Usa o mesmo motor
 Ao renderizar, salva `resultados/tres_cenarios_anual.csv` (valores monetários em
 reais) e `resultados/tres_cenarios_resumo_bilhoes.csv` (valores em R$ bilhões).
 Use `exportar_csv = FALSE` para não gravar os CSVs.
+
+## Projeto BPI
+
+O estudo da base identificada de benefícios, CadÚnico e RAIS está organizado
+na pasta [BPI](BPI/README.md), com códigos de referência, esquema de 60 colunas
+e especificação para gerar uma base sintética em uma próxima etapa.
