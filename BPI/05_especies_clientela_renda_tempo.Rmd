@@ -10,7 +10,7 @@ output:
     highlight: zenburn
     df_print: paged
 params:
-  arquivo_base: "dados/sinteticos/bpi_sintetico_61.csv"
+  arquivo_base: "E:/01_Bases/09_PREVIDENCIA/04_Dados/Saidas/banco_beneficio_cad_rais.parquet"
   arquivo_filiacao_aux: ""
   salario_minimo_faixas: 1412
   tipo_segurado: "Todos"
@@ -52,7 +52,8 @@ library(duckdb)
 library(data.table)
 library(knitr)
 
-# CSV sintético por padrão; altere arquivo_base para seu Parquet integrado.
+# Base identificada: Parquet integrado na pasta Saidas do seu computador.
+# pasta também será usada pelas exportações opcionais do chunk 6 (desativadas).
 arquivo_base <- normalizePath(params$arquivo_base, winslash="/", mustWork=TRUE)
 pasta <- dirname(arquivo_base)
 data_referencia <- as.Date("2025-12-31")

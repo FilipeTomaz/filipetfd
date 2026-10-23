@@ -70,8 +70,21 @@ install.packages(c("DBI", "duckdb", "data.table", "knitr", "rmarkdown"))
 rmarkdown::render("05_especies_clientela_renda_tempo.Rmd")
 ```
 
-Por padrão, lê o CSV de 30 benefícios sintéticos e não filtra linhas. Sem auxiliar,
-a filiação fica não classificada; não são atribuídas categorias fictícias à base.
+Por padrão, lê a base identificada no computador do usuário:
+`E:/01_Bases/09_PREVIDENCIA/04_Dados/Saidas/banco_beneficio_cad_rais.parquet`.
+A variável `pasta` acompanha esse diretório nas exportações opcionais (desativadas
+por padrão). Não há filtros numéricos ativos por padrão. Sem auxiliar, a filiação
+fica não classificada; não são atribuídas categorias fictícias à base.
+
+Mantenha o Rmd na pasta `BPI`, junto da pasta `R` que contém `filtros_05.R`.
+O arquivo de esquema CSV só é necessário quando a fonte escolhida for CSV.
+Para voltar ao exemplo sintético, faça a seleção explícita:
+
+```r
+rmarkdown::render("05_especies_clientela_renda_tempo.Rmd", params = list(
+  arquivo_base = "dados/sinteticos/bpi_sintetico_61.csv"
+))
+```
 
 Exemplo com o Parquet real e limites de renda/tamanho, mantendo todos os tipos:
 
@@ -116,6 +129,6 @@ Rscript testes/testar_filtros_05.R
 
 Os testes usam registros sintéticos para limites exatos, percentuais, ausências,
 filiação presente/ausente, código explicitamente mapeado, BPC e duplicatas de NB.
-A renderização padrão também foi executada com o exemplo de 30×61. Ainda é
+A renderização foi validada com o exemplo sintético de 30×61, em CSV e Parquet. Ainda é
 necessário recuperar a filiação real para obter os resultados por esse tipo no
 Parquet de 61 colunas do usuário.
