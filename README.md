@@ -81,3 +81,9 @@ Use `exportar_csv = FALSE` para não gravar os CSVs.
 O estudo da base identificada de benefícios, CadÚnico e RAIS está organizado
 na pasta [BPI](BPI/README.md), com códigos de referência, esquema de 60 colunas
 e um exemplo sintético de 30 linhas e 61 colunas, com gerador reprodutível em R.
+
+## Economia anual de 2027 a 2034
+
+O [recorte dos três cenários](resultados/economia_anual_2027_2034.md) apresenta
+a economia de cada ano e o total do período, mantendo a transição de 10 anos.
+O CSV correspondente inclui valores reais de 2026 e valores nominais, em bilhões.
