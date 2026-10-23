@@ -95,3 +95,14 @@ Adaptar os relatórios para a base sintética, gerar versões Parquet/DuckDB com
 tipos físicos do esquema e, se necessário, simular as fontes brutas e Mantidos.
 O CSV atual testa o formato final e relações; não tem representatividade
 populacional.
+
+## Arquivo 05: filiação e classificação familiar
+
+A versão de trabalho [05_especies_clientela_renda_tempo.Rmd](05_especies_clientela_renda_tempo.Rmd)
+acrescenta o chunk `classificacao_tipo_renda_familia`, com filtros editáveis de
+filiação, renda per capita, renda total e membros da família. Funciona com CSV
+sintético ou Parquet integrado. Veja [parâmetros e exemplos](docs/filtros_arquivo_05.md).
+
+Filiação (`filiacao_nome`/`filiacao_codigo`) não está nas 61 colunas atuais;
+sem esses campos ou auxiliar por NB, a classificação permanece não informada.
+Clientela rural não é usada como substituto de segurado especial.

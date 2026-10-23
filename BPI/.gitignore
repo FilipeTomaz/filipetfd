@@ -20,3 +20,6 @@ dados/sinteticos/*
 !dados/sinteticos/README.md
 !dados/sinteticos/bpi_sintetico_61.csv
 !dados/sinteticos/manifesto.csv
+
+# Relatório de trabalho: renderizar localmente, sem versionar resultados reais.
+05_especies_clientela_renda_tempo.html

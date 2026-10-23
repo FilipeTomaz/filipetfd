@@ -1,0 +1,335 @@
+---
+title: "Benefícios INSS — Espécie, clientela, renda e tempo até 2025"
+author: "Análise exploratória"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: darkly
+    highlight: zenburn
+    df_print: paged
+params:
+  arquivo_base: "dados/sinteticos/bpi_sintetico_61.csv"
+  arquivo_filiacao_aux: ""
+  salario_minimo_faixas: 1412
+  tipo_segurado: "Todos"
+  clientela_codigos: ""
+  nomes_especial: "SEGURADO ESPECIAL;SEGURADA ESPECIAL"
+  codigos_especial: ""
+  renda_pc_min: null
+  renda_pc_max: null
+  renda_total_min: null
+  renda_total_max: null
+  membros_min: null
+  membros_max: null
+  incluir_ausentes_nos_filtros: false
+---
+
+<style>
+/* Aparência do relatório HTML, sem alterar a renderização das tabelas */
+body { background-color: #1d2024; color: #e8e8e8; }
+pre:not(.sourceCode), pre code { color: #e8e8e8; background-color: #282c32; }
+.table { color: #e8e8e8; }
+.table > thead > tr > th { color: #ffffff; background-color: #303640; }
+.table > tbody > tr > td { color: #e8e8e8; background-color: #242930; }
+.table > tbody > tr:nth-child(odd) > td { background-color: #2d333b; }
+/* Evita cortar tabelas largas; rolagem no próprio documento */
+.main-container { max-width: 96% !important; }
+</style>
+
+
+
+Este relatório analisa os benefícios das espécies **21 (pensão por morte)**, **41 (aposentadoria por idade)** e **88 (BPC ao idoso)**, por clientela. As consultas são agregadas no DuckDB e não transferem a base completa para o R.
+
+**Referência temporal:** 31/12/2025. `dt_dib` representa o início do benefício, não a data de cessação. Assim, os indicadores de tempo abaixo medem o período **potencial decorrido desde a DIB**, não a duração efetiva de pagamentos ou a sobrevivência do beneficiário. Benefícios com DIB posterior à data de referência não entram nas estatísticas de tempo.
+
+## 1. Conexão e verificação das fontes
+
+```{r conexao, message=FALSE, warning=FALSE}
+library(DBI)
+library(duckdb)
+library(data.table)
+library(knitr)
+
+# CSV sintético por padrão; altere arquivo_base para seu Parquet integrado.
+arquivo_base <- normalizePath(params$arquivo_base, winslash="/", mustWork=TRUE)
+pasta <- dirname(arquivo_base)
+data_referencia <- as.Date("2025-12-31")
+con <- dbConnect(duckdb::duckdb(shared_home=FALSE), dbdir=":memory:")
+q_base <- as.character(dbQuoteString(con, arquivo_base))
+if (tolower(tools::file_ext(arquivo_base)) == "parquet") {
+  dbExecute(con, paste0("CREATE VIEW tb_beneficio AS SELECT * FROM read_parquet(",q_base,")"))
+} else if (tolower(tools::file_ext(arquivo_base)) == "csv") {
+  # Não inferir CPF/NB como números. Reconstruir tipos a partir do esquema.
+  dbExecute(con, paste0("CREATE TEMP VIEW base_csv AS SELECT * FROM read_csv(",
+    q_base,",header=true,all_varchar=true)"))
+  esquema_csv <- read.csv("esquemas/banco_beneficio_cad_rais_61.csv",colClasses="character")
+  colunas_csv <- dbGetQuery(con,"DESCRIBE SELECT * FROM base_csv")$column_name
+  selecionar <- vapply(colunas_csv,function(coluna) {
+    id <- as.character(dbQuoteIdentifier(con,coluna))
+    tipo <- esquema_csv$tipo_duckdb[match(coluna,esquema_csv$variavel)]
+    if (is.na(tipo)) return(id) # preserva campos adicionais de filiação, se houver
+    paste0("TRY_CAST(",id," AS ",tipo,") AS ",id)
+  },character(1))
+  dbExecute(con,paste0("CREATE VIEW tb_beneficio AS SELECT ",
+    paste(selecionar,collapse=", ")," FROM base_csv"))
+} else stop("arquivo_base deve ser CSV ou Parquet.")
+
+estrutura <- dbGetQuery(con, "DESCRIBE SELECT * FROM tb_beneficio")
+print(estrutura[, c("column_name", "column_type")])
+
+obrigatorias <- c(
+  "especie", "especie_nome", "clientela_codigo", "clientela",
+  "vl_rmi", "vl_rmi_convertido", "rmi_em_sm", "dt_ddb", "dt_dib",
+  "dt_der", "dt_nascimento", "localizado_cadunico", "localizado_rais",
+  "vl_renda_media_fam", "vl_renda_total_fam", "qt_membro_familia"
+)
+faltantes <- setdiff(obrigatorias, estrutura$column_name)
+if (length(faltantes)) stop("Colunas ausentes: ", paste(faltantes, collapse = ", "))
+```
+
+## 2. Espécie e clientela: três tabelas
+
+As porcentagens de CadÚnico e RAIS têm como denominador o total de benefícios de **cada combinação de espécie e clientela**. Datas mínimas e máximas representam os extremos observados, não o período de recebimento. A média de `vl_rmi_convertido` é exibida apenas para auditoria e **não deve ser comparada entre anos**, pois a documentação indica referências monetárias heterogêneas.
+
+```{r especie_clientela, results='asis'}
+sql_clientela <- "
+SELECT
+  especie, especie_nome, clientela_codigo, clientela,
+  COUNT(*) AS n_beneficios,
+  ROUND(AVG(vl_rmi), 2) AS vl_rmi_medio,
+  ROUND(AVG(vl_rmi_convertido), 2) AS vl_rmi_convertido_medio,
+  ROUND(AVG(rmi_em_sm), 3) AS rmi_media_sm,
+  MIN(dt_ddb) AS primeira_ddb,
+  MAX(dt_ddb) AS ultima_ddb,
+  MIN(dt_nascimento) AS nascimento_mais_antigo,
+  MAX(dt_nascimento) AS nascimento_mais_recente,
+  COUNT(*) FILTER (WHERE UPPER(TRIM(localizado_cadunico)) = 'S') AS n_cadunico,
+  ROUND(100.0 * COUNT(*) FILTER (WHERE UPPER(TRIM(localizado_cadunico)) = 'S')
+    / NULLIF(COUNT(*), 0), 2) AS pct_cadunico,
+  COUNT(*) FILTER (WHERE UPPER(TRIM(localizado_rais)) = 'S') AS n_rais,
+  ROUND(100.0 * COUNT(*) FILTER (WHERE UPPER(TRIM(localizado_rais)) = 'S')
+    / NULLIF(COUNT(*), 0), 2) AS pct_rais
+FROM tb_beneficio
+WHERE especie IN (21, 41, 88)
+GROUP BY especie, especie_nome, clientela_codigo, clientela
+ORDER BY especie, n_beneficios DESC
+"
+resultado <- as.data.table(dbGetQuery(con, sql_clientela))
+tabela_21 <- resultado[especie == 21]
+tabela_41 <- resultado[especie == 41]
+tabela_88 <- resultado[especie == 88]
+
+for (esp in c(21L, 41L, 88L)) {
+  cat(sprintf("\n### Espécie %d — %s\n\n", esp,
+              c(`21` = "Pensão por morte", `41` = "Aposentadoria por idade", `88` = "BPC ao idoso")[[as.character(esp)]]))
+  print(knitr::kable(resultado[especie == esp], digits = 2, format = "html"))
+  cat("\n\n")
+}
+```
+
+## 3. Análise de renda por espécie e clientela
+
+A renda previdenciária é medida pela **RMI na concessão** (`vl_rmi` e `rmi_em_sm`), não pelo valor pago em 2025. A RMI convertida é apresentada para inspeção, mas não deve ser comparada diretamente entre anos devido às referências monetárias heterogêneas. Também são exibidas as rendas familiares do CadÚnico de 2024, separadas da renda do benefício: **não representam a renda familiar na concessão** e podem incluir o próprio benefício.
+
+```{r analise_renda, results='asis'}
+sql_renda <- "
+SELECT
+  especie, especie_nome, clientela_codigo, clientela,
+  COUNT(*) AS n_beneficios,
+  COUNT(vl_rmi) AS n_rmi_preenchida,
+  ROUND(AVG(vl_rmi), 2) AS rmi_nominal_media,
+  ROUND(MEDIAN(vl_rmi), 2) AS rmi_nominal_mediana,
+  ROUND(AVG(vl_rmi_convertido), 2) AS rmi_convertida_media,
+  ROUND(AVG(rmi_em_sm), 3) AS rmi_media_sm,
+  ROUND(MEDIAN(rmi_em_sm), 3) AS rmi_mediana_sm,
+  COUNT(rmi_em_sm) AS n_rmi_sm_preenchida,
+  COUNT(vl_renda_media_fam) AS n_renda_familiar_preenchida,
+  ROUND(AVG(vl_renda_media_fam), 2) AS renda_familiar_media_cad_2024,
+  ROUND(MEDIAN(vl_renda_media_fam), 2) AS renda_familiar_mediana_cad_2024,
+  ROUND(AVG(vl_renda_total_fam), 2) AS renda_familiar_total_media_cad_2024
+FROM tb_beneficio
+WHERE especie IN (21, 41, 88)
+GROUP BY especie, especie_nome, clientela_codigo, clientela
+ORDER BY especie, n_beneficios DESC
+"
+renda <- as.data.table(dbGetQuery(con, sql_renda))
+renda_21 <- renda[especie == 21]
+renda_41 <- renda[especie == 41]
+renda_88 <- renda[especie == 88]
+
+for (esp in c(21L, 41L, 88L)) {
+  cat(sprintf("\n### Espécie %d — Renda\n\n", esp))
+  print(knitr::kable(renda[especie == esp], digits = 2, format = "html"))
+  cat("\n\n")
+}
+```
+
+## 3.1. Filiação, renda per capita, renda total e tamanho familiar
+
+A filiação corresponde a `filiacao_codigo`/`filiacao_nome`, recuperadas nas posições
+13 e 14 dos Concedidos pelo roteiro 00.3. **Essas colunas não estão no esquema de
+61 variáveis.** O chunk usa a coluna presente na base ou uma auxiliar por NB
+(`arquivo_filiacao_aux`); sem ela, informa a classificação ausente. Não infere
+segurado especial a partir de clientela rural, despacho ou vínculo RAIS.
+
+**Segurado especial** usa as descrições configuradas em `nomes_especial` ou os
+códigos explicitamente confirmados e preenchidos em `codigos_especial`. Outras
+filiações descritas ficam em **Demais categorias de filiação**; código isolado
+sem mapeamento e ausências permanecem não classificados. Na espécie 88, a
+classificação é **Não se aplica (BPC)**. Em pensões, a filiação informada na fonte
+não deve ser atribuída automaticamente ao pensionista sem validar o layout.
+
+`vl_renda_media_fam` é renda familiar **per capita**, `vl_renda_total_fam` é renda
+familiar total e `qt_membro_familia` é a quantidade de membros. As duas rendas são
+fotografias de 2024, em reais. Para as faixas, o parâmetro padrão é **R$ 1.412**,
+o salário mínimo de 2024; 1/4 corresponde a R$ 353 e 1/2 a R$ 706.
+As faixas são analíticas e não constituem avaliação automática de elegibilidade.
+
+Os filtros aplicam-se às tabelas desta seção 3.1.
+Os limites mínimo/máximo no YAML são inclusivos. `null` desativa o limite.
+Sem limites, ausências permanecem nas tabelas. Quando há limite ativo, ausências
+não passam, salvo `incluir_ausentes_nos_filtros: true`; valores inválidos nunca
+passam nesse filtro. As porcentagens das faixas usam o total do respectivo grupo
+**dentro do recorte filtrado**, incluindo os casos sem informação quando retidos.
+As contagens são de benefícios, não de famílias ou CPFs únicos.
+
+```{r classificacao_tipo_renda_familia, results='asis'}
+source("R/filtros_05.R")
+separar <- function(x,delim) {
+  y <- trimws(strsplit(x,delim,fixed=TRUE)[[1]])
+  y[nzchar(y)]
+}
+config_05 <- list(
+  salario_minimo=params$salario_minimo_faixas,
+  arquivo_filiacao_aux=params$arquivo_filiacao_aux,
+  nomes_especial=separar(params$nomes_especial,";"),
+  codigos_especial=separar(params$codigos_especial,","),
+  tipo_segurado=params$tipo_segurado,
+  clientela_codigos=separar(params$clientela_codigos,","),
+  renda_pc_min=params$renda_pc_min,renda_pc_max=params$renda_pc_max,
+  renda_total_min=params$renda_total_min,renda_total_max=params$renda_total_max,
+  membros_min=params$membros_min,membros_max=params$membros_max,
+  incluir_ausentes_nos_filtros=params$incluir_ausentes_nos_filtros)
+classificacao_05 <- filtrar_familias_05(con,config_05)
+cat("**Origem da filiação:** ",classificacao_05$origem_filiacao,".\n\n",sep="")
+mostrar_05 <- function(titulo,x) {
+  cat("\n\n### ",titulo,"\n\n",sep="")
+  if (!nrow(x)) {cat("Nenhum benefício no recorte.\n\n");return(invisible(NULL))}
+  if (nrow(x)>200) cat("Exibidos os primeiros 200 de ",nrow(x),
+    " grupos; o objeto completo permanece em classificacao_05.\n\n",sep="")
+  print(knitr::kable(head(x,200),format="html",digits=2,row.names=FALSE))
+  cat("\n\n")
+}
+mostrar_05("Cobertura antes e depois dos filtros",classificacao_05$auditoria)
+mostrar_05("Domínio observado da filiação antes dos filtros",classificacao_05$dominios_filiacao)
+mostrar_05("Resumo antes dos filtros",classificacao_05$resumo_antes)
+mostrar_05("Resumo do recorte por espécie, clientela e filiação",classificacao_05$resumo_filtrado)
+mostrar_05("Renda per capita",classificacao_05$faixas_per_capita)
+mostrar_05("Renda total familiar",classificacao_05$faixas_total)
+mostrar_05("Quantidade de membros",classificacao_05$faixas_membros)
+mostrar_05("Cruzamento das três classificações familiares",classificacao_05$cruzamento_familiar)
+```
+
+## 4. Tempo potencial de usufruto até 31/12/2025
+
+O tempo é calculado desde `dt_dib` até **31/12/2025**, exclusivamente para benefícios cuja DIB é válida e não posterior à data de referência. **Sem a data de cessação, o indicador é um limite temporal potencial, não a duração efetiva do recebimento.** O cálculo não permite determinar se o benefício estava ativo em 31/12/2025.
+
+Além do tempo potencial, são apresentadas a idade na DDB e a diferença entre DER e DDB (prazo decorrido até o despacho), que são indicadores distintos do tempo de usufruto.
+
+```{r analise_tempo, results='asis'}
+ref_sql <- format(data_referencia, "%Y-%m-%d")
+sql_tempo <- sprintf("
+WITH dados AS (
+  SELECT
+    especie, especie_nome, clientela_codigo, clientela,
+    dt_dib, dt_ddb, dt_der, dt_nascimento,
+    CASE WHEN dt_dib BETWEEN DATE '1900-01-01' AND DATE '%s'
+         THEN date_diff('day', dt_dib, DATE '%s') END AS dias_desde_dib,
+    CASE WHEN dt_nascimento BETWEEN DATE '1900-01-01' AND dt_ddb
+         THEN date_diff('year', dt_nascimento, dt_ddb)
+              - CASE WHEN strftime(dt_ddb, '%%m%%d') < strftime(dt_nascimento, '%%m%%d')
+                     THEN 1 ELSE 0 END
+         END AS idade_na_ddb,
+    CASE WHEN dt_der IS NOT NULL AND dt_ddb IS NOT NULL
+              AND dt_ddb >= dt_der
+         THEN date_diff('day', dt_der, dt_ddb) END AS dias_der_ddb
+  FROM tb_beneficio
+  WHERE especie IN (21, 41, 88)
+)
+SELECT
+  especie, especie_nome, clientela_codigo, clientela,
+  COUNT(*) AS n_beneficios,
+  COUNT(dias_desde_dib) AS n_dib_valida_ate_2025,
+  COUNT(*) - COUNT(dias_desde_dib) AS n_dib_ausente_invalida_ou_futura,
+  ROUND(100.0 * COUNT(dias_desde_dib) / NULLIF(COUNT(*), 0), 2) AS pct_dib_valida,
+  ROUND(AVG(dias_desde_dib) / 365.2425, 2) AS anos_potenciais_medios,
+  ROUND(MEDIAN(dias_desde_dib) / 365.2425, 2) AS anos_potenciais_medianos,
+  ROUND(MIN(dias_desde_dib) / 365.2425, 2) AS anos_potenciais_minimos,
+  ROUND(MAX(dias_desde_dib) / 365.2425, 2) AS anos_potenciais_maximos,
+  ROUND(AVG(idade_na_ddb), 1) AS idade_media_na_ddb,
+  ROUND(MEDIAN(idade_na_ddb), 1) AS idade_mediana_na_ddb,
+  ROUND(AVG(dias_der_ddb), 1) AS dias_medios_der_ate_ddb,
+  ROUND(MEDIAN(dias_der_ddb), 1) AS dias_medianos_der_ate_ddb
+FROM dados
+GROUP BY especie, especie_nome, clientela_codigo, clientela
+ORDER BY especie, n_beneficios DESC
+", ref_sql, ref_sql)
+
+tempo <- as.data.table(dbGetQuery(con, sql_tempo))
+tempo_21 <- tempo[especie == 21]
+tempo_41 <- tempo[especie == 41]
+tempo_88 <- tempo[especie == 88]
+
+for (esp in c(21L, 41L, 88L)) {
+  cat(sprintf("\n### Espécie %d — Tempo potencial até 31/12/2025\n\n", esp))
+  print(knitr::kable(tempo[especie == esp], digits = 2, format = "html"))
+  cat("\n\n")
+}
+```
+
+## 5. Conferência das datas e registros potencialmente inconsistentes
+
+```{r consistencia_datas}
+consistencia <- dbGetQuery(con, sprintf("
+SELECT
+  especie,
+  COUNT(*) AS n,
+  COUNT(*) FILTER (WHERE dt_dib IS NULL) AS sem_dib,
+  COUNT(*) FILTER (WHERE dt_dib > DATE '%s') AS dib_posterior_referencia,
+  COUNT(*) FILTER (WHERE dt_der IS NULL) AS sem_der,
+  COUNT(*) FILTER (WHERE dt_ddb IS NULL) AS sem_ddb,
+  COUNT(*) FILTER (WHERE dt_nascimento IS NULL) AS sem_nascimento,
+  COUNT(*) FILTER (WHERE dt_ddb < dt_der) AS despacho_antes_requerimento,
+  COUNT(*) FILTER (WHERE dt_nascimento > dt_ddb) AS nascimento_apos_despacho
+FROM tb_beneficio
+WHERE especie IN (21, 41, 88)
+GROUP BY especie
+ORDER BY especie
+", ref_sql))
+knitr::kable(consistencia)
+```
+
+## 6. Exportar resultados agregados
+
+```{r exportacao, eval=FALSE}
+# Descomente eval=TRUE para gravar apenas tabelas agregadas (sem CPF ou NB).
+fwrite(resultado, file.path(pasta, "resumo_especie_clientela.csv"), sep = ";", bom = TRUE)
+fwrite(renda, file.path(pasta, "resumo_renda_especie_clientela.csv"), sep = ";", bom = TRUE)
+fwrite(tempo, file.path(pasta, "resumo_tempo_potencial_ate_2025.csv"), sep = ";", bom = TRUE)
+fwrite(as.data.table(consistencia), file.path(pasta, "consistencia_datas_especies.csv"), sep = ";", bom = TRUE)
+```
+
+## Notas de interpretação
+
+- **Não há variável de cessação** nas 60 colunas. Portanto, `anos_potenciais_medios` não é duração efetiva de usufruto nem comprovação de que o benefício estava ativo em 2025.
+- A data de referência 31/12/2025 é um marco analítico solicitado, não prova de que a base contém informações completas até esse dia.
+- A renda familiar do CadÚnico corresponde à fotografia de 2024 e é exibida em colunas próprias, sem ser somada à RMI.
+- `vl_rmi_convertido` consta na primeira análise por fidelidade à solicitação, mas a comparação intertemporal deve privilegiar `rmi_em_sm`.
+- Os percentuais de localização no CadÚnico e na RAIS são percentuais de **benefícios**, não de CPFs distintos.
+
+
+```{r encerrar-conexao, include=FALSE}
+dbDisconnect(con,shutdown=TRUE)
+```
