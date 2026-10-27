@@ -1,0 +1,15 @@
+{
+  "repository": "FilipeTomaz/filipetfd",
+  "base_commit": "ef4229c2f7a7362ec8acef2b4cfbd7f1745ebdcb",
+  "workbook_sha256": "2f1882ea9f001e3cd182b185eca132cefb6c13aca3dacdd9af18228943729bc3",
+  "annual_csv_sha256": "178a04a320bc2739798806f144ba6c99d755dea110e097128fc60ffb0600f2e5",
+  "payments_reference": 13,
+  "payments_proposal": 12,
+  "transition_start": 2027,
+  "transition_end": 2036,
+  "eligibility_start_actual_admission": 2037,
+  "eligible_share": 0.6,
+  "real_currency_year": 2026,
+  "slides": 8,
+  "cumulative_real_savings_2060": 4645094712161.77
+}

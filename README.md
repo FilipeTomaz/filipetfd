@@ -87,3 +87,11 @@ e um exemplo sintético de 30 linhas e 61 colunas, com gerador reprodutível em 
 O [recorte dos três cenários](resultados/economia_anual_2027_2034.md) apresenta
 a economia de cada ano e o total do período, mantendo a transição de 10 anos.
 O CSV correspondente inclui valores reais de 2026 e valores nominais, em bilhões.
+
+## 65 anos, 12 pagamentos e elegibilidade após a transição
+
+O [novo cenário com apresentação](apresentacoes/pos-transicao-65-12-60/README.md)
+eleva as idades até 65 anos entre 2027 e 2036, adota 12 pagamentos anuais para
+as novas coortes e mantém 60% elegíveis somente nos ingressos efetivos desde
+2037. Inclui PowerPoint, PDF, resultados anuais e instruções para reproduzir
+os cálculos, preservando os cenários anteriores.

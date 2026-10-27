@@ -1,0 +1,7 @@
+Git HEAD: ef4229c2f7a7362ec8acef2b4cfbd7f1745ebdcb
+R: R version 4.5.3 (2026-03-11)
+H65/M65; transição uniforme 2027–2036;
+13 pagamentos na referência; 12 na proposta para novas coortes;
+60% elegíveis para ingressos efetivos desde 2037; valor mensal inalterado;
+Coortes de referência anteriores a 2027 preservadas e fora da diferença;
+Valores reais de 2026; mesma planilha e mesmas premissas do modelo original.
