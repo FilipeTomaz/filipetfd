@@ -1,0 +1,19 @@
+{
+  "repository": "FilipeTomaz/filipetfd",
+  "source_commit": "2c8c2a7fb564fbd06b05665b398d89c6e87aed0c",
+  "source_csv": "resultados/tres_cenarios_anual.csv",
+  "source_sha256": "823a6148ebbc4a28e4321b0ac0106a1d530a7144b8e7a3e5dde1d99748977087",
+  "calculation_changed": false,
+  "scenario": "base_65_62: H65/M62, 13 pagamentos, 100% elegiveis, transicao 2027-2036",
+  "chart_series": [
+    "pagamentos_referencia*salario/deflator",
+    "pagamentos_proposta*salario/deflator"
+  ],
+  "currency_base_year": 2026,
+  "slides": 2,
+  "editable_chart": true,
+  "reference_2060_real_bi": 527.8026563053471,
+  "proposal_2060_real_bi": 445.03439655365935,
+  "savings_2060_real_bi": 82.7682597516882,
+  "cumulative_savings_real_bi": 2026.3571240351
+}
